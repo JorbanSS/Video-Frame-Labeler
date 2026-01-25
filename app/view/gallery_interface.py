@@ -39,11 +39,7 @@ class ToolBar(QWidget):
         self.titleLabel = TitleLabel(title, self)
         self.subtitleLabel = CaptionLabel(subtitle, self)
 
-        self.documentButton = PushButton(
-            self.tr('Documentation'), self, FluentIcon.DOCUMENT)
-        self.sourceButton = PushButton(self.tr('Source'), self, FluentIcon.GITHUB)
         self.themeButton = ToolButton(FluentIcon.CONSTRACT, self)
-        self.separator = SeparatorWidget(self)
         self.supportButton = ToolButton(FluentIcon.HEART, self)
         self.feedbackButton = ToolButton(FluentIcon.FEEDBACK, self)
 
@@ -65,11 +61,8 @@ class ToolBar(QWidget):
 
         self.buttonLayout.setSpacing(4)
         self.buttonLayout.setContentsMargins(0, 0, 0, 0)
-        self.buttonLayout.addWidget(self.documentButton, 0, Qt.AlignLeft)
-        self.buttonLayout.addWidget(self.sourceButton, 0, Qt.AlignLeft)
         self.buttonLayout.addStretch(1)
         self.buttonLayout.addWidget(self.themeButton, 0, Qt.AlignRight)
-        self.buttonLayout.addWidget(self.separator, 0, Qt.AlignRight)
         self.buttonLayout.addWidget(self.supportButton, 0, Qt.AlignRight)
         self.buttonLayout.addWidget(self.feedbackButton, 0, Qt.AlignRight)
         self.buttonLayout.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -84,10 +77,6 @@ class ToolBar(QWidget):
 
         self.themeButton.clicked.connect(lambda: toggleTheme(True))
         self.supportButton.clicked.connect(signalBus.supportSignal)
-        self.documentButton.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(HELP_URL)))
-        self.sourceButton.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(EXAMPLE_URL)))
         self.feedbackButton.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
 

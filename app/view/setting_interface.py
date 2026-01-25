@@ -114,6 +114,32 @@ class SettingInterface(ScrollArea):
             parent=self.updateSoftwareGroup
         )
 
+        # FFmpeg settings
+        self.ffmpegGroup = SettingCardGroup(
+            self.tr("FFmpeg Settings"), self.scrollWidget)
+        self.ffmpegPathCard = PushSettingCard(
+            self.tr('Choose FFmpeg executable'),
+            FIF.FOLDER,
+            self.tr('FFmpeg path'),
+            cfg.get(cfg.ffmpegPath),
+            self.ffmpegGroup
+        )
+        self.ffmpegThreadsCard = RangeSettingCard(
+            cfg.ffmpegThreads,
+            FIF.TAG,
+            self.tr('Number of threads'),
+            self.tr('Number of threads used for video processing'),
+            self.ffmpegGroup
+        )
+        self.ffmpegHardwareAccelCard = ComboBoxSettingCard(
+            cfg.ffmpegHardwareAccel,
+            FIF.DEVELOPER_TOOLS,
+            self.tr('Hardware acceleration'),
+            self.tr('Hardware acceleration method for video processing'),
+            texts=['None', 'CUDA', 'OpenCL', 'DXVA2', 'Intel QSV'],
+            parent=self.ffmpegGroup
+        )
+
         # application
         self.aboutGroup = SettingCardGroup(self.tr('About'), self.scrollWidget)
         self.helpCard = HyperlinkCard(
@@ -177,6 +203,10 @@ class SettingInterface(ScrollArea):
 
         self.materialGroup.addSettingCard(self.blurRadiusCard)
 
+        self.ffmpegGroup.addSettingCard(self.ffmpegPathCard)
+        self.ffmpegGroup.addSettingCard(self.ffmpegThreadsCard)
+        self.ffmpegGroup.addSettingCard(self.ffmpegHardwareAccelCard)
+
         self.updateSoftwareGroup.addSettingCard(self.updateOnStartUpCard)
 
         self.aboutGroup.addSettingCard(self.helpCard)
@@ -189,6 +219,7 @@ class SettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.musicInThisPCGroup)
         self.expandLayout.addWidget(self.personalGroup)
         self.expandLayout.addWidget(self.materialGroup)
+        self.expandLayout.addWidget(self.ffmpegGroup)
         self.expandLayout.addWidget(self.updateSoftwareGroup)
         self.expandLayout.addWidget(self.aboutGroup)
 
@@ -211,6 +242,18 @@ class SettingInterface(ScrollArea):
         cfg.set(cfg.downloadFolder, folder)
         self.downloadFolderCard.setContent(folder)
 
+    def __onFFmpegPathCardClicked(self):
+        """ FFmpeg path card clicked slot """
+        filePath, _ = QFileDialog.getOpenFileName(
+            self, self.tr("Choose FFmpeg executable"), "./", 
+            self.tr("Executable Files (*.exe);;All Files (*.*)"))
+        
+        if not filePath or cfg.get(cfg.ffmpegPath) == filePath:
+            return
+
+        cfg.set(cfg.ffmpegPath, filePath)
+        self.ffmpegPathCard.setContent(filePath)
+
     def __connectSignalToSlot(self):
         """ connect signal to slot """
         cfg.appRestartSig.connect(self.__showRestartTooltip)
@@ -218,6 +261,9 @@ class SettingInterface(ScrollArea):
         # music in the pc
         self.downloadFolderCard.clicked.connect(
             self.__onDownloadFolderCardClicked)
+
+        # FFmpeg settings
+        self.ffmpegPathCard.clicked.connect(self.__onFFmpegPathCardClicked)
 
         # personalization
         cfg.themeChanged.connect(setTheme)

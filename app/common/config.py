@@ -53,6 +53,12 @@ class Config(QConfig):
     # software update
     checkUpdateAtStartUp = ConfigItem("Update", "CheckUpdateAtStartUp", True, BoolValidator())
 
+    # FFmpeg settings
+    ffmpegPath = ConfigItem("FFmpeg", "Path", "ffmpeg")
+    ffmpegThreads = RangeConfigItem("FFmpeg", "Threads", 4, RangeValidator(1, 16))
+    ffmpegHardwareAccel = OptionsConfigItem("FFmpeg", "HardwareAcceleration", "none", 
+                                          OptionsValidator(["none", "cuda", "opencl", "dxva2", "qsv"]))
+
 
 YEAR = 2026
 AUTHOR = "JorbanS"

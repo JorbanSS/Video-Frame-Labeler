@@ -4,7 +4,7 @@ from PyQt5.QtGui import QIcon, QDesktopServices, QColor
 from PyQt5.QtWidgets import QApplication
 
 from qfluentwidgets import (NavigationAvatarWidget, NavigationItemPosition, MessageBox, FluentWindow,
-                            SplashScreen, SystemThemeListener, isDarkTheme)
+                            SplashScreen, SystemThemeListener, isDarkTheme, toggleTheme)
 from qfluentwidgets import FluentIcon as FIF
 
 from .gallery_interface import GalleryInterface
@@ -14,7 +14,6 @@ from .date_time_interface import DateTimeInterface
 from .dialog_interface import DialogInterface
 from .layout_interface import LayoutInterface
 from .icon_interface import IconInterface
-from .material_interface import MaterialInterface
 from .menu_interface import MenuInterface
 from .navigation_view_interface import NavigationViewInterface
 from .scroll_interface import ScrollInterface
@@ -22,6 +21,7 @@ from .status_info_interface import StatusInfoInterface
 from .setting_interface import SettingInterface
 from .text_interface import TextInterface
 from .view_interface import ViewInterface
+from .video_frame_interface import VideoFrameInterface
 from ..common.config import ZH_SUPPORT_URL, EN_SUPPORT_URL, cfg
 from ..common.icon import Icon
 from ..common.signal_bus import signalBus
@@ -46,13 +46,13 @@ class MainWindow(FluentWindow):
         self.dialogInterface = DialogInterface(self)
         self.layoutInterface = LayoutInterface(self)
         self.menuInterface = MenuInterface(self)
-        self.materialInterface = MaterialInterface(self)
         self.navigationViewInterface = NavigationViewInterface(self)
         self.scrollInterface = ScrollInterface(self)
         self.statusInfoInterface = StatusInfoInterface(self)
         self.settingInterface = SettingInterface(self)
         self.textInterface = TextInterface(self)
         self.viewInterface = ViewInterface(self)
+        self.videoFrameInterface = VideoFrameInterface(self)
 
         # enable acrylic effect
         self.navigationInterface.setAcrylicEnabled(True)
@@ -79,11 +79,11 @@ class MainWindow(FluentWindow):
         self.navigationInterface.addSeparator()
 
         pos = NavigationItemPosition.SCROLL
+        self.addSubInterface(self.videoFrameInterface, FIF.VIDEO, "视频帧提取", pos)
         self.addSubInterface(self.basicInputInterface, FIF.CHECKBOX,t.basicInput, pos)
         self.addSubInterface(self.dateTimeInterface, FIF.DATE_TIME, t.dateTime, pos)
         self.addSubInterface(self.dialogInterface, FIF.MESSAGE, t.dialogs, pos)
         self.addSubInterface(self.layoutInterface, FIF.LAYOUT, t.layout, pos)
-        self.addSubInterface(self.materialInterface, FIF.PALETTE, t.material, pos)
         self.addSubInterface(self.menuInterface, Icon.MENU, t.menus, pos)
         self.addSubInterface(self.navigationViewInterface, FIF.MENU, t.navigation, pos)
         self.addSubInterface(self.scrollInterface, FIF.SCROLL, t.scroll, pos)
@@ -91,14 +91,14 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.textInterface, Icon.TEXT, t.text, pos)
         self.addSubInterface(self.viewInterface, Icon.GRID, t.view, pos)
 
-        # add custom widget to bottom
+        # add theme toggle button to bottom
         self.navigationInterface.addItem(
-            routeKey='price',
-            icon=Icon.PRICE,
-            text=t.price,
-            onClick=self.onSupport,
+            routeKey='theme',
+            icon=FIF.CONSTRACT,
+            text='主题',
+            onClick=lambda: toggleTheme(True),
             selectable=False,
-            tooltip=t.price,
+            tooltip='切换主题',
             position=NavigationItemPosition.BOTTOM
         )
         self.addSubInterface(
