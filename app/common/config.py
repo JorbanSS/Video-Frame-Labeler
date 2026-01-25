@@ -54,8 +54,8 @@ class Config(QConfig):
     checkUpdateAtStartUp = ConfigItem("Update", "CheckUpdateAtStartUp", True, BoolValidator())
 
 
-YEAR = 2023
-AUTHOR = "zhiyiYo"
+YEAR = 2026
+AUTHOR = "JorbanS"
 VERSION = __version__
 HELP_URL = "https://qfluentwidgets.com"
 REPO_URL = "https://github.com/zhiyiYo/PyQt-Fluent-Widgets"
