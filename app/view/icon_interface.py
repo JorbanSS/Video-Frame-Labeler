@@ -1,8 +1,8 @@
 # coding:utf-8
 from typing import List
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QApplication, QFrame, QVBoxLayout, QLabel, QWidget, QHBoxLayout
+from PyQt5.QtCore import Qt, pyqtSignal, QSize
+from PyQt5.QtWidgets import QApplication, QFrame, QVBoxLayout, QLabel, QWidget, QHBoxLayout, QSizePolicy
 from qfluentwidgets import (FluentIcon, IconWidget, FlowLayout, isDarkTheme,
                             Theme, applyThemeColor, SmoothScrollArea, SearchLineEdit, StrongBodyLabel,
                             BodyLabel)
@@ -144,6 +144,8 @@ class IconCardView(QWidget):
         self.scrollArea.setViewportMargins(0, 5, 0, 5)
         self.scrollArea.setWidgetResizable(True)
         self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.scrollWidget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.vBoxLayout.setContentsMargins(0, 0, 0, 0)
         self.vBoxLayout.setSpacing(12)

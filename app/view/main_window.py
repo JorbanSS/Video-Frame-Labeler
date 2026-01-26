@@ -22,6 +22,7 @@ from .setting_interface import SettingInterface
 from .text_interface import TextInterface
 from .view_interface import ViewInterface
 from .video_frame_interface import VideoFrameInterface
+from .image_label_interface import ImageLabelInterface
 from ..common.config import ZH_SUPPORT_URL, EN_SUPPORT_URL, cfg
 from ..common.icon import Icon
 from ..common.signal_bus import signalBus
@@ -53,6 +54,7 @@ class MainWindow(FluentWindow):
         self.textInterface = TextInterface(self)
         self.viewInterface = ViewInterface(self)
         self.videoFrameInterface = VideoFrameInterface(self)
+        self.imageLabelInterface = ImageLabelInterface(self)
 
         # enable acrylic effect
         self.navigationInterface.setAcrylicEnabled(True)
@@ -80,6 +82,7 @@ class MainWindow(FluentWindow):
 
         pos = NavigationItemPosition.SCROLL
         self.addSubInterface(self.videoFrameInterface, FIF.VIDEO, "视频帧提取", pos)
+        self.addSubInterface(self.imageLabelInterface, FIF.TAG, "图片标记", pos)
         self.addSubInterface(self.basicInputInterface, FIF.CHECKBOX,t.basicInput, pos)
         self.addSubInterface(self.dateTimeInterface, FIF.DATE_TIME, t.dateTime, pos)
         self.addSubInterface(self.dialogInterface, FIF.MESSAGE, t.dialogs, pos)

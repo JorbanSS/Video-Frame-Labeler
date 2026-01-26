@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QStandardPaths
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import QWidget, QLabel, QFileDialog
 
-from ..common.config import cfg, HELP_URL, FEEDBACK_URL, AUTHOR, VERSION, YEAR, isWin11
+from ..common.config import cfg, REPO_URL, AUTHOR, VERSION, YEAR, isWin11
 from ..common.signal_bus import signalBus
 from ..common.style_sheet import StyleSheet
 
@@ -103,67 +103,42 @@ class SettingInterface(ScrollArea):
             self.materialGroup
         )
 
-        # update software
-        self.updateSoftwareGroup = SettingCardGroup(
-            self.tr("Software update"), self.scrollWidget)
-        self.updateOnStartUpCard = SwitchSettingCard(
-            FIF.UPDATE,
-            self.tr('Check for updates when the application starts'),
-            self.tr('The new version will be more stable and have more features'),
-            configItem=cfg.checkUpdateAtStartUp,
-            parent=self.updateSoftwareGroup
-        )
+        
 
         # FFmpeg settings
         self.ffmpegGroup = SettingCardGroup(
-            self.tr("FFmpeg Settings"), self.scrollWidget)
+            self.tr("FFmpeg设置"), self.scrollWidget)
         self.ffmpegPathCard = PushSettingCard(
-            self.tr('Choose FFmpeg executable'),
+            self.tr('选择FFmpeg可执行文件'),
             FIF.FOLDER,
-            self.tr('FFmpeg path'),
+            self.tr('FFmpeg路径'),
             cfg.get(cfg.ffmpegPath),
             self.ffmpegGroup
         )
         self.ffmpegThreadsCard = RangeSettingCard(
             cfg.ffmpegThreads,
             FIF.TAG,
-            self.tr('Number of threads'),
-            self.tr('Number of threads used for video processing'),
+            self.tr('线程数'),
+            self.tr('视频处理使用的线程数'),
             self.ffmpegGroup
         )
         self.ffmpegHardwareAccelCard = ComboBoxSettingCard(
             cfg.ffmpegHardwareAccel,
             FIF.DEVELOPER_TOOLS,
-            self.tr('Hardware acceleration'),
-            self.tr('Hardware acceleration method for video processing'),
-            texts=['None', 'CUDA', 'OpenCL', 'DXVA2', 'Intel QSV'],
+            self.tr('硬件加速'),
+            self.tr('视频处理的硬件加速方法'),
+            texts=['无', 'CUDA', 'OpenCL', 'DXVA2', 'Intel QSV'],
             parent=self.ffmpegGroup
         )
 
         # application
-        self.aboutGroup = SettingCardGroup(self.tr('About'), self.scrollWidget)
-        self.helpCard = HyperlinkCard(
-            HELP_URL,
-            self.tr('Open help page'),
-            FIF.HELP,
-            self.tr('Help'),
-            self.tr(
-                'Discover new features and learn useful tips about PyQt-Fluent-Widgets'),
-            self.aboutGroup
-        )
-        self.feedbackCard = PrimaryPushSettingCard(
-            self.tr('Provide feedback'),
-            FIF.FEEDBACK,
-            self.tr('Provide feedback'),
-            self.tr('Help us improve PyQt-Fluent-Widgets by providing feedback'),
-            self.aboutGroup
-        )
+        self.aboutGroup = SettingCardGroup(self.tr('关于'), self.scrollWidget)
         self.aboutCard = PrimaryPushSettingCard(
-            self.tr('Check update'),
-            FIF.INFO,
-            self.tr('About'),
-            '© ' + self.tr('Copyright') + f" {YEAR}, {AUTHOR}. " +
-            self.tr('Version') + " " + VERSION,
+            self.tr('访问GitHub页面'),
+            FIF.GITHUB,
+            self.tr('关于'),
+            '© ' + self.tr('版权所有') + f" {YEAR}, {AUTHOR}. " +
+            self.tr('版本') + " " + VERSION,
             self.aboutGroup
         )
 
@@ -207,10 +182,6 @@ class SettingInterface(ScrollArea):
         self.ffmpegGroup.addSettingCard(self.ffmpegThreadsCard)
         self.ffmpegGroup.addSettingCard(self.ffmpegHardwareAccelCard)
 
-        self.updateSoftwareGroup.addSettingCard(self.updateOnStartUpCard)
-
-        self.aboutGroup.addSettingCard(self.helpCard)
-        self.aboutGroup.addSettingCard(self.feedbackCard)
         self.aboutGroup.addSettingCard(self.aboutCard)
 
         # add setting card group to layout
@@ -220,7 +191,6 @@ class SettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.personalGroup)
         self.expandLayout.addWidget(self.materialGroup)
         self.expandLayout.addWidget(self.ffmpegGroup)
-        self.expandLayout.addWidget(self.updateSoftwareGroup)
         self.expandLayout.addWidget(self.aboutGroup)
 
     def __showRestartTooltip(self):
@@ -245,8 +215,8 @@ class SettingInterface(ScrollArea):
     def __onFFmpegPathCardClicked(self):
         """ FFmpeg path card clicked slot """
         filePath, _ = QFileDialog.getOpenFileName(
-            self, self.tr("Choose FFmpeg executable"), "./", 
-            self.tr("Executable Files (*.exe);;All Files (*.*)"))
+            self, self.tr("选择FFmpeg可执行文件"), "./", 
+            self.tr("可执行文件 (*.exe);;所有文件 (*.*)"))
         
         if not filePath or cfg.get(cfg.ffmpegPath) == filePath:
             return
@@ -271,5 +241,5 @@ class SettingInterface(ScrollArea):
         self.micaCard.checkedChanged.connect(signalBus.micaEnableChanged)
 
         # about
-        self.feedbackCard.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
+        self.aboutCard.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(REPO_URL)))

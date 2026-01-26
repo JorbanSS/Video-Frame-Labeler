@@ -59,6 +59,21 @@ class Config(QConfig):
     ffmpegHardwareAccel = OptionsConfigItem("FFmpeg", "HardwareAcceleration", "none", 
                                           OptionsValidator(["none", "cuda", "opencl", "dxva2", "qsv"]))
 
+    # Video frame extraction settings
+    extractionMode = OptionsConfigItem("VideoFrameExtraction", "Mode", "fps", 
+                                     OptionsValidator(["fps", "interval", "frame_count"]))
+    extractionFps = RangeConfigItem("VideoFrameExtraction", "Fps", 10, RangeValidator(1, 600))
+    extractionInterval = RangeConfigItem("VideoFrameExtraction", "Interval", 1, RangeValidator(1, 3600))
+    extractionFrameCount = RangeConfigItem("VideoFrameExtraction", "FrameCount", 100, RangeValidator(1, 10000))
+    outputFormat = OptionsConfigItem("VideoFrameExtraction", "OutputFormat", "png", 
+                                   OptionsValidator(["png", "jpg", "bmp", "tiff"]))
+    outputDirectory = ConfigItem("VideoFrameExtraction", "OutputDirectory", "")
+    outputPrefix = ConfigItem("VideoFrameExtraction", "OutputPrefix", "frame")
+    numberingDigits = RangeConfigItem("VideoFrameExtraction", "NumberingDigits", 6, RangeValidator(1, 10))
+    resizeEnabled = ConfigItem("VideoFrameExtraction", "ResizeEnabled", False, BoolValidator())
+    resizeWidth = RangeConfigItem("VideoFrameExtraction", "ResizeWidth", 1920, RangeValidator(1, 7680))
+    resizeHeight = RangeConfigItem("VideoFrameExtraction", "ResizeHeight", 1080, RangeValidator(1, 4320))
+
 
 YEAR = 2026
 AUTHOR = "JorbanS"
