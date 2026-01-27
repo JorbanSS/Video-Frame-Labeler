@@ -338,7 +338,7 @@ class ImageDisplayWidget(QWidget):
                 border_style = """
                     QLabel {
                         background-color: #1a1a1a;
-                        border: 1px solid #444;
+                        border: 3px solid #3a3a3a;
                         border-radius: 4px;
                     }
                 """

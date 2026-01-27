@@ -35,8 +35,6 @@ class Config(QConfig):
     """ Config of application """
 
     # folders
-    musicFolders = ConfigItem(
-        "Folders", "LocalMusic", [], FolderListValidator())
     downloadFolder = ConfigItem(
         "Folders", "Download", "app/download", FolderValidator())
 
