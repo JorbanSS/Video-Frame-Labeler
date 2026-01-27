@@ -4,3 +4,4 @@ darkdetect
 colorthief
 scipy
 pillow
+PyQt-Fluent-Widgets
