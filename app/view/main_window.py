@@ -107,6 +107,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(
             self.settingInterface, FIF.SETTING, self.tr('Settings'), NavigationItemPosition.BOTTOM)
 
+        # 默认显示视频帧提取界面
+        self.stackedWidget.setCurrentWidget(self.videoFrameInterface, False)
+
     def initWindow(self):
         self.resize(960, 780)
         self.setMinimumWidth(760)
