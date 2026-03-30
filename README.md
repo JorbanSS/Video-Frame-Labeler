@@ -10,6 +10,11 @@ python3 -m venv .venv
 python main.py
 ```
 
+启动
+```
+.\.venv\Scripts\python.exe .\main.py
+```
+
 ## 演示图
 
 ![图片标记](./doc/img/%E5%9B%BE%E7%89%87%E6%A0%87%E8%AE%B0.png)

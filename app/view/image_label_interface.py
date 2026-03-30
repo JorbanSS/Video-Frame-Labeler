@@ -3,13 +3,14 @@ import os
 import sys
 import json
 import shutil
+import re
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QSize, QPoint
+from PyQt5.QtCore import Qt, QSize, QPoint, QStandardPaths, QTimer
 from PyQt5.QtGui import QKeySequence, QPixmap, QKeyEvent
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                              QFileDialog, QLabel, QPushButton, 
-                             QComboBox, QShortcut, QFrame, QSizePolicy)
+                             QComboBox, QShortcut, QFrame, QSizePolicy, QScrollArea)
 from qfluentwidgets import (PushButton, ComboBox, StrongBodyLabel, 
                            BodyLabel, LineEdit, InfoBar,
                            FluentIcon as FIF, PrimaryPushButton, CardWidget,
@@ -42,13 +43,20 @@ class LabelProject:
         self.load_config()
     
     def get_config_path(self):
+        return self.get_output_base_dir() / "label_config.json"
+
+    def get_legacy_config_path(self):
         return self.project_dir / "label_config.json"
     
     def get_output_base_dir(self):
-        return self.project_dir / "output"
+        return self.project_dir.parent / "labeled_pic"
     
     def load_config(self):
         config_path = self.get_config_path()
+        legacy_config_path = self.get_legacy_config_path()
+        if (not config_path.exists()) and legacy_config_path.exists():
+            config_path = legacy_config_path
+
         if config_path.exists():
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -68,6 +76,10 @@ class LabelProject:
                                 self.labeled_images[image_path] = category_name
                         else:
                             self.labeled_images[image_path] = category_name
+
+                # 旧位置配置读取成功后，写回到新位置
+                if config_path != self.get_config_path():
+                    self.save_config()
             except Exception as e:
                 print(f"加载配置失败: {e}")
                 self.categories = []
@@ -86,17 +98,21 @@ class LabelProject:
             "labeled_images": self.labeled_images
         }
         try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存配置失败: {e}")
     
     def get_image_files(self):
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff'}
+        image_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff')
         images = []
-        for f in self.project_dir.iterdir():
-            if f.suffix.lower() in image_extensions and f.name != "label_config.json":
-                images.append(f)
+        with os.scandir(self.project_dir) as entries:
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                if entry.name.lower().endswith(image_extensions):
+                    images.append(Path(entry.path))
         images.sort(key=lambda x: x.name)
         return images
     
@@ -148,21 +164,76 @@ class LabelProject:
     
     def create_output_folders(self):
         output_dir = self.get_output_base_dir()
-        output_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        category_dirs = self.get_export_category_dirs(output_dir)
+        for category_dir in category_dirs.values():
+            category_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir, category_dirs
+
+    def sanitize_export_folder_name(self, category_name):
+        """Convert category name to a safe single-level folder name."""
+        safe_name = str(category_name or "").strip()
+        # Replace separators/invalid chars with readable full-width alternatives,
+        # so folder names stay close to the original category text.
+        full_width_map = str.maketrans({
+            "/": "／",
+            "\\": "＼",
+            ":": "：",
+            "*": "＊",
+            "?": "？",
+            "\"": "＂",
+            "<": "＜",
+            ">": "＞",
+            "|": "｜",
+        })
+        safe_name = safe_name.translate(full_width_map)
+        # Remove control characters.
+        safe_name = re.sub(r'[\x00-\x1f]', "", safe_name)
+        # Windows does not allow trailing spaces/dots in folder names.
+        safe_name = safe_name.rstrip(" .")
+        if not safe_name:
+            safe_name = "未命名类别"
+
+        # Avoid Windows reserved device names.
+        reserved = {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        }
+        if safe_name.upper() in reserved:
+            safe_name = f"_{safe_name}"
+
+        return safe_name
+
+    def get_export_category_dirs(self, output_dir):
+        """Build unique export folder paths for each category name."""
+        category_dirs = {}
+        used_names = set()
+
         for category in self.categories:
-            category_dir = output_dir / category.name
-            category_dir.mkdir(exist_ok=True)
-        return output_dir
+            base_name = self.sanitize_export_folder_name(category.name)
+            candidate_name = base_name
+            index = 2
+            while candidate_name.lower() in used_names:
+                candidate_name = f"{base_name}_{index}"
+                index += 1
+
+            used_names.add(candidate_name.lower())
+            category_dirs[category.name] = output_dir / candidate_name
+
+        return category_dirs
     
     def export_labeled_images(self):
-        output_dir = self.create_output_folders()
+        output_dir, category_dirs = self.create_output_folders()
         
         for rel_path, category_name in self.labeled_images.items():
             image_file = self.project_dir / rel_path
             if image_file.exists():
                 category = self.get_category(category_name)
                 if category:
-                    target_dir = output_dir / category_name
+                    target_dir = category_dirs.get(category_name)
+                    if not target_dir:
+                        continue
                     target_path = target_dir / image_file.name
                     try:
                         shutil.copy2(image_file, target_path)
@@ -321,7 +392,7 @@ class ImageDisplayWidget(QWidget):
                 return
             
             if max_size:
-                pixmap = pixmap.scaled(max_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = pixmap.scaled(max_size, Qt.KeepAspectRatio, Qt.FastTransformation)
             
             self.imageLabel.setPixmap(pixmap)
             
@@ -510,6 +581,655 @@ class CategoryCard(CardWidget):
             self.parent_widget.deleteCategory(self.category)
 
 
+class ThumbnailListItem(QFrame):
+    """Thumbnail item shown in full-screen left image list."""
+
+    def __init__(self, index, image_path, parent_window=None):
+        super().__init__(parent_window)
+        self.index = index
+        self.image_path = Path(image_path)
+        self.parent_window = parent_window
+        self._thumb_loaded = False
+        self.setObjectName("fullscreenThumbItem")
+        self.setCursor(Qt.PointingHandCursor)
+        self.initUI()
+
+    def initUI(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+
+        self.thumbLabel = QLabel(self)
+        self.thumbLabel.setFixedSize(88, 56)
+        self.thumbLabel.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.thumbLabel)
+
+        self.nameLabel = BodyLabel(f"{self.index + 1}. {self.image_path.name}", self)
+        self.nameLabel.setWordWrap(True)
+        layout.addWidget(self.nameLabel, 1)
+
+        self.updateState(active=False, border_color=None, label_text=None)
+
+    def ensureThumbnailLoaded(self, thumb_cache):
+        if self._thumb_loaded:
+            return
+
+        cache_key = (str(self.image_path), self.thumbLabel.width(), self.thumbLabel.height())
+        scaled = thumb_cache.get(cache_key)
+        if scaled is None:
+            pixmap = QPixmap(str(self.image_path))
+            if pixmap.isNull():
+                self.thumbLabel.setText("无图")
+                self.thumbLabel.setStyleSheet("QLabel { color: #888888; }")
+                self._thumb_loaded = True
+                return
+
+            scaled = pixmap.scaled(
+                self.thumbLabel.size(),
+                Qt.KeepAspectRatio,
+                Qt.FastTransformation
+            )
+            thumb_cache[cache_key] = scaled
+
+        self.thumbLabel.setPixmap(scaled)
+        self._thumb_loaded = True
+
+    def updateState(self, active=False, border_color=None, label_text=None):
+        if isDarkTheme():
+            base_bg = "#1f1f1f"
+            active_bg = "#2a2a2a"
+            text_color = "#e8e8e8"
+            sub_text = "#b0b0b0"
+            default_border = "#3a3a3a"
+        else:
+            base_bg = "#ffffff"
+            active_bg = "#edf3ff"
+            text_color = "#222222"
+            sub_text = "#666666"
+            default_border = "#d0d0d0"
+
+        border = border_color if border_color else default_border
+        border_width = 3 if active else 2
+        background = active_bg if active else base_bg
+
+        self.setStyleSheet(f"""
+            QFrame#fullscreenThumbItem {{
+                background-color: {background};
+                border: {border_width}px solid {border};
+                border-radius: 6px;
+            }}
+        """)
+        if label_text:
+            self.nameLabel.setText(f"{self.index + 1}. {self.image_path.name} [{label_text}]")
+        else:
+            self.nameLabel.setText(f"{self.index + 1}. {self.image_path.name}")
+        self.nameLabel.setStyleSheet(f"QLabel {{ color: {text_color}; font-size: 12px; }}")
+        self.thumbLabel.setStyleSheet(f"QLabel {{ background: transparent; color: {sub_text}; }}")
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton and self.parent_window:
+            self.parent_window.selectImageIndex(self.index)
+
+
+class FullscreenLabelWindow(QWidget):
+    """Full-screen labeling window that shows categories and shortcuts only."""
+
+    def __init__(self, label_interface):
+        super().__init__(None)
+        self.label_interface = label_interface
+        self.shortcutKeys = {}
+        self.categoryButtons = {}
+        self.thumbnailItems = []
+        self._thumbCache = {}
+        self._sourcePixmapCache = {}
+        self._sourcePixmapOrder = []
+        self._sourcePixmapLimit = 8
+        self._lastActiveThumbnailIndex = -1
+        self._themeIsDark = None
+        self._thumbnailThemeDirty = True
+        self.setObjectName("fullscreenLabelWindow")
+        self.setWindowTitle("图片标记")
+        self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+        self.initUI()
+
+    def initUI(self):
+        mainLayout = QVBoxLayout(self)
+        mainLayout.setContentsMargins(16, 16, 16, 16)
+        mainLayout.setSpacing(12)
+
+        topLayout = QHBoxLayout()
+        topLayout.setSpacing(10)
+        self.titleLabel = StrongBodyLabel("图片标记", self)
+        self.indexLabel = BodyLabel("0 / 0", self)
+        self.prevButton = PushButton("上一张", self, FIF.LEFT_ARROW)
+        self.prevButton.clicked.connect(self.onPrevClicked)
+        self.nextButton = PushButton("下一张", self, FIF.RIGHT_ARROW)
+        self.nextButton.clicked.connect(self.onNextClicked)
+        topLayout.addWidget(self.titleLabel)
+        topLayout.addStretch()
+        topLayout.addWidget(self.indexLabel)
+        topLayout.addWidget(self.prevButton)
+        topLayout.addWidget(self.nextButton)
+        mainLayout.addLayout(topLayout)
+
+        contentLayout = QHBoxLayout()
+        contentLayout.setSpacing(16)
+        mainLayout.addLayout(contentLayout, 1)
+
+        # Far left: image list (thumbnail + name + border color)
+        listPanel = QWidget(self)
+        listPanel.setObjectName("fullscreenListPanel")
+        listPanel.setMinimumWidth(260)
+        listPanel.setMaximumWidth(340)
+        listPanel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        listPanelLayout = QVBoxLayout(listPanel)
+        listPanelLayout.setContentsMargins(0, 0, 0, 0)
+        listPanelLayout.setSpacing(0)
+
+        self.thumbnailScroll = QScrollArea(self)
+        self.thumbnailScroll.setObjectName("fullscreenThumbScroll")
+        self.thumbnailScroll.setWidgetResizable(True)
+        self.thumbnailScroll.setFrameShape(QFrame.NoFrame)
+        self.thumbnailContainer = QWidget(self.thumbnailScroll)
+        self.thumbnailContainer.setObjectName("fullscreenThumbContainer")
+        self.thumbnailListLayout = QVBoxLayout(self.thumbnailContainer)
+        self.thumbnailListLayout.setContentsMargins(0, 0, 0, 0)
+        self.thumbnailListLayout.setSpacing(6)
+        self.thumbnailListLayout.setAlignment(Qt.AlignTop)
+        self.thumbnailListLayout.addStretch()
+        self.thumbnailScroll.setWidget(self.thumbnailContainer)
+        listPanelLayout.addWidget(self.thumbnailScroll, 1)
+        contentLayout.addWidget(listPanel, 1)
+
+        # Right: image on top, categories at bottom
+        rightPanel = QWidget(self)
+        rightPanel.setObjectName("fullscreenRightPanel")
+        rightPanel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        rightPanelLayout = QVBoxLayout(rightPanel)
+        rightPanelLayout.setContentsMargins(0, 0, 0, 0)
+        rightPanelLayout.setSpacing(2)
+
+        # Top area: image
+        imagePanel = QWidget(self)
+        imagePanelLayout = QVBoxLayout(imagePanel)
+        imagePanelLayout.setContentsMargins(0, 0, 0, 0)
+        imagePanelLayout.setSpacing(10)
+        self.currentLabelLabel = BodyLabel("当前标记: 无", self)
+        self.currentLabelLabel.setStyleSheet("""
+            QLabel {
+                color: #888;
+                font-size: 14px;
+                padding: 8px;
+                background-color: #2d2d2d;
+                border-radius: 4px;
+            }
+        """)
+        imagePanelLayout.addWidget(self.currentLabelLabel)
+
+        self.imageDisplay = ImageDisplayWidget(self)
+        # Reuse existing left/right click behavior from main interface.
+        self.imageDisplay.parent_interface = self.label_interface
+        imagePanelLayout.addWidget(self.imageDisplay, 1)
+        rightPanelLayout.addWidget(imagePanel, 1)
+
+        # Bottom: horizontal category + shortcut panel (no title)
+        self.bottomCategoryPanel = QWidget(self)
+        self.bottomCategoryPanel.setObjectName("fullscreenBottomCategoryPanel")
+        bottomPanelLayout = QVBoxLayout(self.bottomCategoryPanel)
+        bottomPanelLayout.setContentsMargins(0, 0, 0, 0)
+        bottomPanelLayout.setSpacing(0)
+
+        self.categoryScroll = QScrollArea(self)
+        self.categoryScroll.setObjectName("fullscreenCategoryScroll")
+        self.categoryScroll.setWidgetResizable(True)
+        self.categoryScroll.setFrameShape(QFrame.NoFrame)
+        self.categoryScroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.categoryScroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.categoryScroll.setFixedHeight(96)
+        self.categoryContainer = QWidget(self.categoryScroll)
+        self.categoryContainer.setObjectName("fullscreenCategoryContainer")
+        self.categoryListLayout = QHBoxLayout(self.categoryContainer)
+        self.categoryListLayout.setContentsMargins(0, 0, 0, 0)
+        self.categoryListLayout.setSpacing(8)
+        self.categoryListLayout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.categoryListLayout.addStretch()
+        self.categoryScroll.setWidget(self.categoryContainer)
+        bottomPanelLayout.addWidget(self.categoryScroll)
+        rightPanelLayout.addWidget(self.bottomCategoryPanel, 0)
+
+        contentLayout.addWidget(rightPanel, 4)
+        self.applyThemeStyles(force=True)
+
+    def _buttonStyle(self, color, active=False):
+        if isDarkTheme():
+            active_border = "#ffffff"
+            inactive_border = "rgba(255,255,255,0.25)"
+        else:
+            active_border = "#222222"
+            inactive_border = "rgba(0,0,0,0.18)"
+        border = f"2px solid {active_border}" if active else f"1px solid {inactive_border}"
+        hover_color = self.label_interface.lighten_color(color)
+        return f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                border: {border};
+                border-radius: 6px;
+                padding: 4px 6px;
+                font-weight: bold;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+        """
+
+    def applyThemeStyles(self, force=False):
+        current_dark = isDarkTheme()
+        if (not force) and self._themeIsDark is current_dark:
+            return
+        self._themeIsDark = current_dark
+        self._thumbnailThemeDirty = True
+
+        if isDarkTheme():
+            window_bg = "#111111"
+            text_color = "#f0f0f0"
+            sub_text = "#a6a6a6"
+            label_bg = "#2d2d2d"
+            scroll_track = "#1b1b1b"
+            scroll_handle = "#4f4f4f"
+            scroll_handle_hover = "#6a6a6a"
+        else:
+            window_bg = "#f7f7f7"
+            text_color = "#202020"
+            sub_text = "#666666"
+            label_bg = "#f1f2f4"
+            scroll_track = "#eceff2"
+            scroll_handle = "#b5bcc6"
+            scroll_handle_hover = "#9ea7b3"
+
+        self.setStyleSheet(f"""
+            QWidget#fullscreenLabelWindow {{
+                background-color: {window_bg};
+            }}
+            QWidget#fullscreenListPanel {{
+                background: transparent;
+                border: none;
+            }}
+            QWidget#fullscreenBottomCategoryPanel {{
+                background: transparent;
+                border: none;
+                padding: 0;
+            }}
+            QScrollArea#fullscreenThumbScroll {{
+                background: transparent;
+                border: none;
+            }}
+            QWidget#fullscreenThumbContainer {{
+                background: transparent;
+            }}
+            QScrollArea#fullscreenThumbScroll QWidget#qt_scrollarea_viewport {{
+                background-color: transparent;
+            }}
+            QScrollArea#fullscreenCategoryScroll {{
+                background: transparent;
+                border: none;
+            }}
+            QWidget#fullscreenCategoryContainer {{
+                background: transparent;
+            }}
+            QScrollArea#fullscreenCategoryScroll QWidget#qt_scrollarea_viewport {{
+                background-color: transparent;
+            }}
+            QScrollArea#fullscreenThumbScroll QScrollBar:vertical {{
+                background: {scroll_track};
+                width: 10px;
+                margin: 0;
+                border-radius: 5px;
+            }}
+            QScrollArea#fullscreenThumbScroll QScrollBar::handle:vertical {{
+                background: {scroll_handle};
+                min-height: 24px;
+                border-radius: 5px;
+            }}
+            QScrollArea#fullscreenThumbScroll QScrollBar::handle:vertical:hover {{
+                background: {scroll_handle_hover};
+            }}
+            QScrollArea#fullscreenThumbScroll QScrollBar::add-line:vertical,
+            QScrollArea#fullscreenThumbScroll QScrollBar::sub-line:vertical,
+            QScrollArea#fullscreenThumbScroll QScrollBar::add-page:vertical,
+            QScrollArea#fullscreenThumbScroll QScrollBar::sub-page:vertical {{
+                background: transparent;
+                height: 0;
+            }}
+            QScrollArea#fullscreenCategoryScroll QScrollBar:horizontal {{
+                background: {scroll_track};
+                height: 10px;
+                margin: 0;
+                border-radius: 5px;
+            }}
+            QScrollArea#fullscreenCategoryScroll QScrollBar::handle:horizontal {{
+                background: {scroll_handle};
+                min-width: 24px;
+                border-radius: 5px;
+            }}
+            QScrollArea#fullscreenCategoryScroll QScrollBar::handle:horizontal:hover {{
+                background: {scroll_handle_hover};
+            }}
+            QScrollArea#fullscreenCategoryScroll QScrollBar::add-line:horizontal,
+            QScrollArea#fullscreenCategoryScroll QScrollBar::sub-line:horizontal,
+            QScrollArea#fullscreenCategoryScroll QScrollBar::add-page:horizontal,
+            QScrollArea#fullscreenCategoryScroll QScrollBar::sub-page:horizontal {{
+                background: transparent;
+                width: 0;
+            }}
+        """)
+        self.titleLabel.setStyleSheet(f"QLabel {{ color: {text_color}; font-size: 18px; font-weight: bold; }}")
+        self.indexLabel.setStyleSheet(f"QLabel {{ color: {sub_text}; font-size: 14px; }}")
+        self.setCurrentLabelText("当前标记: 无", None, label_bg)
+
+    def _applyImageBorderStyle(self, border_color=None):
+        if border_color:
+            border_style = f"""
+                QLabel {{
+                    background-color: #1a1a1a;
+                    border: 3px solid {border_color};
+                    border-radius: 4px;
+                }}
+            """
+        else:
+            border_style = """
+                QLabel {
+                    background-color: #1a1a1a;
+                    border: 3px solid #3a3a3a;
+                    border-radius: 4px;
+                }
+            """
+        self.imageDisplay.imageLabel.setStyleSheet(border_style)
+
+    def _getSourcePixmap(self, image_path):
+        key = str(image_path)
+        pixmap = self._sourcePixmapCache.get(key)
+        if pixmap is not None and not pixmap.isNull():
+            if key in self._sourcePixmapOrder:
+                self._sourcePixmapOrder.remove(key)
+            self._sourcePixmapOrder.append(key)
+            return pixmap
+
+        pixmap = QPixmap(key)
+        if pixmap.isNull():
+            return None
+
+        self._sourcePixmapCache[key] = pixmap
+        self._sourcePixmapOrder.append(key)
+        while len(self._sourcePixmapOrder) > self._sourcePixmapLimit:
+            old_key = self._sourcePixmapOrder.pop(0)
+            self._sourcePixmapCache.pop(old_key, None)
+        return pixmap
+
+    def setCurrentLabelText(self, text, color=None, fallback_bg=None):
+        if isDarkTheme():
+            base_text = "#888"
+            bg = fallback_bg or "#2d2d2d"
+        else:
+            base_text = "#666"
+            bg = fallback_bg or "#f1f2f4"
+
+        text_color = color if color else base_text
+        border = f"2px solid {color}" if color else "1px solid transparent"
+        self.currentLabelLabel.setText(text)
+        self.currentLabelLabel.setStyleSheet(f"""
+            QLabel {{
+                color: {text_color};
+                font-size: 14px;
+                padding: 8px;
+                background-color: {bg};
+                border-radius: 4px;
+                border: {border};
+            }}
+        """)
+
+    def clearShortcuts(self):
+        for shortcut in self.shortcutKeys.values():
+            if shortcut:
+                try:
+                    shortcut.deleteLater()
+                except Exception:
+                    pass
+        self.shortcutKeys = {}
+
+    def refreshCategories(self):
+        interface = self.label_interface
+        self.applyThemeStyles()
+        self.clearShortcuts()
+        self.categoryButtons = {}
+
+        while self.categoryListLayout.count():
+            item = self.categoryListLayout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        if not interface.project:
+            self.categoryListLayout.addStretch()
+            return
+
+        for category in interface.project.categories:
+            row = QWidget(self.categoryContainer)
+            row.setObjectName("fullscreenCategoryRow")
+            row.setMinimumWidth(150)
+            row.setMaximumWidth(150)
+            row.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            row_bg = "#222222" if isDarkTheme() else "#f3f4f6"
+            row_border = "rgba(255,255,255,0.08)" if isDarkTheme() else "rgba(0,0,0,0.10)"
+            row.setStyleSheet(f"""
+                QWidget#fullscreenCategoryRow {{
+                    background-color: {row_bg};
+                    border: 1px solid {row_border};
+                    border-radius: 6px;
+                }}
+            """)
+            rowLayout = QVBoxLayout(row)
+            rowLayout.setContentsMargins(4, 3, 4, 3)
+            rowLayout.setSpacing(1)
+            button = PushButton(category.name, row)
+            button.setMinimumHeight(26)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setStyleSheet(self._buttonStyle(category.color or "#3498db"))
+            button.clicked.connect(lambda checked, c=category: self.applyCategory(c.name))
+            rowLayout.addWidget(button)
+
+            metaRow = QHBoxLayout()
+            metaRow.setSpacing(4)
+            shortcut_text = category.shortcut_key if category.shortcut_key else "无"
+            shortcutLabel = BodyLabel(f"快捷键: {shortcut_text}", row)
+            shortcut_color = "#b3b3b3" if isDarkTheme() else "#666666"
+            shortcutLabel.setStyleSheet(f"QLabel {{ color: {shortcut_color}; font-size: 10px; }}")
+            metaRow.addWidget(shortcutLabel)
+            metaRow.addStretch()
+            count = interface.project.get_category_count(category.name)
+            countLabel = BodyLabel(f"已标记: {count}", row)
+            count_color = "#8f8f8f" if isDarkTheme() else "#7a7a7a"
+            countLabel.setStyleSheet(f"QLabel {{ color: {count_color}; font-size: 10px; }}")
+            metaRow.addWidget(countLabel)
+            rowLayout.addLayout(metaRow)
+
+            self.categoryListLayout.addWidget(row)
+            self.categoryButtons[category.name] = (button, category.color or "#3498db")
+
+            if category.shortcut_key:
+                try:
+                    if category.shortcut_key == "Space":
+                        key_sequence = QKeySequence(Qt.Key_Space)
+                    else:
+                        key_sequence = QKeySequence(category.shortcut_key)
+                    shortcut = QShortcut(key_sequence, self)
+                    shortcut.activated.connect(lambda c=category: self.applyCategory(c.name))
+                    self.shortcutKeys[category.name] = shortcut
+                except Exception as e:
+                    print(f"全屏窗口注册快捷键失败: {e}")
+
+        self.categoryListLayout.addStretch()
+        self.refreshImageList(force_rebuild=True)
+        self.refreshView(refresh_image_list=False)
+
+    def refreshImageList(self, force_rebuild=False):
+        interface = self.label_interface
+        images = interface.image_files if interface else []
+        should_rebuild = force_rebuild or (len(self.thumbnailItems) != len(images))
+
+        if should_rebuild:
+            self.thumbnailItems = []
+            while self.thumbnailListLayout.count():
+                item = self.thumbnailListLayout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+
+            for index, img_file in enumerate(images):
+                item = ThumbnailListItem(index, img_file, self)
+                self.thumbnailListLayout.addWidget(item)
+                self.thumbnailItems.append(item)
+
+            self.thumbnailListLayout.addStretch()
+            self._lastActiveThumbnailIndex = -1
+
+        total = len(self.thumbnailItems)
+        if total == 0:
+            return
+
+        current = interface.current_index
+        update_indices = set()
+
+        if force_rebuild:
+            # 首屏只刷新当前附近，避免打开全屏时全量刷导致卡顿
+            if 0 <= current < total:
+                start = max(0, current - 24)
+                end = min(total - 1, current + 24)
+                update_indices.update(range(start, end + 1))
+            else:
+                update_indices.update(range(min(total, 30)))
+        else:
+            if 0 <= self._lastActiveThumbnailIndex < total:
+                update_indices.add(self._lastActiveThumbnailIndex)
+            if 0 <= current < total:
+                update_indices.add(current)
+                # 预热当前附近缩略图
+                update_indices.update(range(max(0, current - 4), min(total, current + 5)))
+
+        if self._thumbnailThemeDirty:
+            update_indices.update(range(total))
+
+        for index in sorted(update_indices):
+            item = self.thumbnailItems[index]
+            label = interface.project.get_image_label(images[index]) if interface and interface.project else None
+            border_color = None
+            if label and interface and interface.project:
+                category = interface.project.get_category(label)
+                if category and category.color:
+                    border_color = category.color
+            load_thumb = (0 <= current < total and abs(index - current) <= 24) or force_rebuild
+            if load_thumb:
+                item.ensureThumbnailLoaded(self._thumbCache)
+            item.updateState(active=(index == current), border_color=border_color, label_text=label)
+
+        if 0 <= current < len(self.thumbnailItems):
+            self.thumbnailScroll.ensureWidgetVisible(self.thumbnailItems[current], 12, 12)
+        self._lastActiveThumbnailIndex = current
+        self._thumbnailThemeDirty = False
+
+    def selectImageIndex(self, index):
+        interface = self.label_interface
+        if not interface or index < 0 or index >= len(interface.image_files):
+            return
+        interface.current_index = index
+        interface.loadCurrentImage()
+        self.refreshView()
+
+    def applyCategory(self, category_name):
+        self.label_interface.labelCurrentImage(category_name)
+        self.refreshView()
+
+    def onPrevClicked(self):
+        self.label_interface.prevImage()
+        self.refreshView()
+
+    def onNextClicked(self):
+        self.label_interface.nextImage()
+        self.refreshView()
+
+    def refreshView(self, refresh_image_list=True):
+        interface = self.label_interface
+        self.applyThemeStyles()
+        if refresh_image_list:
+            self.refreshImageList(force_rebuild=False)
+        if not interface.project or not interface.image_files:
+            self.indexLabel.setText("0 / 0")
+            self.setCurrentLabelText("当前标记: 无")
+            self.imageDisplay.load_image(None)
+            return
+
+        if interface.current_index < 0 or interface.current_index >= len(interface.image_files):
+            self.indexLabel.setText(f"0 / {len(interface.image_files)}")
+            self.setCurrentLabelText("当前标记: 无")
+            self.imageDisplay.load_image(None)
+            return
+
+        img_file = interface.image_files[interface.current_index]
+        label = interface.project.get_image_label(img_file)
+        border_color = None
+        label_color = "#888"
+        if label:
+            category = interface.project.get_category(label)
+            if category and category.color:
+                border_color = category.color
+                label_color = category.color
+
+        image_area = self.imageDisplay.size()
+        image_size = QSize(max(320, image_area.width() - 16), max(240, image_area.height() - 16))
+        source_pixmap = self._getSourcePixmap(img_file)
+        if source_pixmap is None:
+            self.imageDisplay.load_image(str(img_file), image_size, border_color)
+        else:
+            scaled = source_pixmap.scaled(image_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+            self.imageDisplay.imageLabel.setPixmap(scaled)
+            self.imageDisplay.image_path = str(img_file)
+            self._applyImageBorderStyle(border_color)
+
+        self.indexLabel.setText(f"{interface.current_index + 1} / {len(interface.image_files)}")
+        if label:
+            self.setCurrentLabelText(f"当前标记: {label}", label_color)
+        else:
+            self.setCurrentLabelText("当前标记: 未标记")
+
+        for name, button_info in self.categoryButtons.items():
+            button, color = button_info
+            button.setStyleSheet(self._buttonStyle(color, active=(name == label)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refreshView()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        if event.key() == Qt.Key_Left:
+            self.onPrevClicked()
+            return
+        if event.key() == Qt.Key_Right:
+            self.onNextClicked()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self.clearShortcuts()
+        if self.label_interface:
+            self.label_interface.fullscreenLabelWindow = None
+        super().closeEvent(event)
+
+
 class ImageLabelInterface(GalleryInterface):
     def __init__(self, parent=None):
         super().__init__(
@@ -524,14 +1244,23 @@ class ImageLabelInterface(GalleryInterface):
         self.current_index = -1
         self.shortcutLayout = None
         self.shortcutKeys = {}
+        self.projectSelectionCard = None
+        self.categoryManagementCard = None
+        self.imageLabelingCard = None
+        self.exportCard = None
+        self.fullscreenLabelWindow = None
+        self._imageListPopulateToken = 0
         
         self.initUI()
+        self.bindContentCards()
+        self.updateContentVisibility()
     
     def initUI(self):
         self.addExampleCard(
             title="项目选择",
             widget=self.createProjectSelectionWidget(),
-            sourcePath=""
+            sourcePath="",
+            stretch=1
         )
         
         self.addExampleCard(
@@ -551,24 +1280,63 @@ class ImageLabelInterface(GalleryInterface):
         self.addExampleCard(
             title="导出结果",
             widget=self.createExportWidget(),
-            sourcePath=""
+            sourcePath="",
+            stretch=1
         )
+
+    def bindContentCards(self):
+        """Capture cards created by `addExampleCard` in init order."""
+        cards = []
+        for i in range(self.vBoxLayout.count()):
+            item = self.vBoxLayout.itemAt(i)
+            widget = item.widget() if item else None
+            if widget is not None:
+                cards.append(widget)
+
+        if len(cards) >= 4:
+            self.projectSelectionCard = cards[0]
+            self.categoryManagementCard = cards[1]
+            self.imageLabelingCard = cards[2]
+            self.exportCard = cards[3]
+
+    def updateContentVisibility(self):
+        """Hide non-path content before a project folder is selected."""
+        has_project = self.project is not None
+        for card in (self.categoryManagementCard, self.imageLabelingCard, self.exportCard):
+            if card is not None:
+                card.setVisible(has_project)
     
     def createProjectSelectionWidget(self):
         widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setSpacing(15)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        buttonLayout = QHBoxLayout()
+        buttonLayout.setSpacing(15)
         
         self.selectFolderButton = PushButton("选择图片文件夹", self, FIF.FOLDER)
         self.selectFolderButton.clicked.connect(self.selectProjectFolder)
-        layout.addWidget(self.selectFolderButton)
+        buttonLayout.addWidget(self.selectFolderButton)
         
         self.pasteFolderButton = PushButton("粘贴", self, FIF.PASTE)
         self.pasteFolderButton.clicked.connect(self.pasteFolderFromClipboard)
-        layout.addWidget(self.pasteFolderButton)
+        buttonLayout.addWidget(self.pasteFolderButton)
+        buttonLayout.addStretch()
+        layout.addLayout(buttonLayout)
         
         self.folderPathLabel = BodyLabel("未选择", self)
-        layout.addWidget(self.folderPathLabel, 1)
+        self.folderPathLabel.setWordWrap(True)
+        self.folderPathLabel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.folderPathLabel.setMinimumWidth(0)
+        self.folderPathLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.folderPathLabel.setStyleSheet("""
+            QLabel {
+                padding: 6px 8px;
+            }
+        """)
+        layout.addWidget(self.folderPathLabel)
         
         return widget
     
@@ -683,10 +1451,13 @@ class ImageLabelInterface(GalleryInterface):
         self.nextButton.clicked.connect(self.nextImage)
         
         self.imageIndexLabel = BodyLabel("0 / 0", self)
+        self.fullscreenButton = PushButton("大窗标记", self)
+        self.fullscreenButton.clicked.connect(self.openFullscreenLabeler)
         
         controlLayout.addWidget(self.prevButton)
         controlLayout.addWidget(self.imageIndexLabel)
         controlLayout.addWidget(self.nextButton)
+        controlLayout.addWidget(self.fullscreenButton)
         controlLayout.addStretch()
         
         layout.addLayout(controlLayout)
@@ -707,26 +1478,69 @@ class ImageLabelInterface(GalleryInterface):
     
     def createExportWidget(self):
         widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setSpacing(15)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        topLayout = QHBoxLayout()
+        topLayout.setSpacing(15)
         
         self.exportInfoLabel = BodyLabel("已标记: 0 / 0 张图片", self)
-        layout.addWidget(self.exportInfoLabel)
+        topLayout.addWidget(self.exportInfoLabel)
         
         self.exportButton = PushButton("导出已标记图片", self, FIF.SAVE)
         self.exportButton.clicked.connect(self.exportImages)
         
         self.openOutputButton = PushButton("打开输出文件夹", self, FIF.FOLDER)
         self.openOutputButton.clicked.connect(self.openOutputFolder)
-        
-        self.progressLabel = BodyLabel("", self)
-        
-        layout.addWidget(self.exportButton)
-        layout.addWidget(self.openOutputButton)
+
+        topLayout.addWidget(self.exportButton)
+        topLayout.addWidget(self.openOutputButton)
+        topLayout.addStretch()
+        layout.addLayout(topLayout)
+
+        self.progressLabel = BodyLabel("导出目录: 未导出", self)
+        self.progressLabel.setWordWrap(True)
+        self.progressLabel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.progressLabel.setMinimumWidth(0)
+        self.progressLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.progressLabel.setStyleSheet("""
+            QLabel {
+                padding: 6px 8px;
+            }
+        """)
         layout.addWidget(self.progressLabel)
-        layout.addStretch()
         
         return widget
+
+    def openFullscreenLabeler(self):
+        """Open large labeling window (maximized, not true fullscreen)."""
+        if not self.project or not self.image_files:
+            InfoBar.warning(
+                "警告",
+                "请先选择包含图片的文件夹",
+                duration=2000,
+                parent=self
+            )
+            return
+
+        if self.fullscreenLabelWindow and self.fullscreenLabelWindow.isVisible():
+            self.fullscreenLabelWindow.activateWindow()
+            self.fullscreenLabelWindow.raise_()
+            return
+
+        self.fullscreenLabelWindow = FullscreenLabelWindow(self)
+        self.fullscreenLabelWindow.showMaximized()
+        self.fullscreenLabelWindow.refreshCategories()
+        self.fullscreenLabelWindow.refreshView()
+
+    def refreshFullscreenLabelWindow(self, refresh_categories=False):
+        if not self.fullscreenLabelWindow or not self.fullscreenLabelWindow.isVisible():
+            return
+        if refresh_categories:
+            self.fullscreenLabelWindow.refreshCategories()
+        self.fullscreenLabelWindow.refreshView()
     
     def lighten_color(self, color, amount=0.2):
         import colorsys
@@ -738,14 +1552,46 @@ class ImageLabelInterface(GalleryInterface):
         return '#{:02x}{:02x}{:02x}'.format(int(r*255), int(g*255), int(b*255))
     
     def selectProjectFolder(self):
+        startDir = self.resolveDialogDirectory(self.project.project_dir if self.project else None)
         folderPath = QFileDialog.getExistingDirectory(
             self,
             "选择图片文件夹",
-            ""
+            startDir
         )
         
         if folderPath:
             self.loadProjectFolder(folderPath)
+
+    def resolveDialogDirectory(self, *candidates):
+        """Select a valid directory for file dialogs."""
+        for path in candidates:
+            if not path:
+                continue
+
+            candidate = str(path).strip()
+            if not candidate:
+                continue
+
+            if os.path.isfile(candidate):
+                candidate = os.path.dirname(candidate)
+
+            if os.path.isdir(candidate):
+                return candidate
+
+        for location in (
+            QStandardPaths.PicturesLocation,
+            QStandardPaths.DocumentsLocation,
+            QStandardPaths.HomeLocation
+        ):
+            candidate = QStandardPaths.writableLocation(location)
+            if candidate and os.path.isdir(candidate):
+                return candidate
+
+        home = str(Path.home())
+        if os.path.isdir(home):
+            return home
+
+        return os.getcwd()
     
     def pasteFolderFromClipboard(self):
         """ 从剪贴板粘贴文件夹路径 """
@@ -786,29 +1632,49 @@ class ImageLabelInterface(GalleryInterface):
     
     def loadProjectFolder(self, folderPath):
         """ 加载项目文件夹 """
-        self.project = LabelProject(folderPath)
-        self.image_files = self.project.get_image_files()
-        
         self.folderPathLabel.setText(folderPath)
-        self.updateCategoryList()
-        self.updateImageList()
-        
-        if self.image_files:
-            self.current_index = 0
-            self.loadCurrentImage()
-            InfoBar.success(
-                "成功",
-                f"已加载 {len(self.image_files)} 张图片",
-                duration=2000,
+        self.selectFolderButton.setEnabled(False)
+        self.pasteFolderButton.setEnabled(False)
+        QTimer.singleShot(0, lambda p=folderPath: self._loadProjectFolderInternal(p))
+
+    def _loadProjectFolderInternal(self, folderPath):
+        try:
+            self.project = LabelProject(folderPath)
+            self.image_files = self.project.get_image_files()
+            self.updateContentVisibility()
+            
+            self.folderPathLabel.setText(folderPath)
+            self.progressLabel.setText("导出目录: 未导出")
+            self.updateCategoryList()
+            self.updateImageList()
+            self.refreshFullscreenLabelWindow(refresh_categories=True)
+            
+            if self.image_files:
+                self.current_index = 0
+                self.loadCurrentImage()
+                InfoBar.success(
+                    "成功",
+                    f"已加载 {len(self.image_files)} 张图片",
+                    duration=2000,
+                    parent=self
+                )
+            else:
+                InfoBar.warning(
+                    "警告",
+                    "文件夹中没有找到图片文件",
+                    duration=2000,
+                    parent=self
+                )
+        except Exception as e:
+            InfoBar.error(
+                "错误",
+                f"加载文件夹失败: {str(e)}",
+                duration=3000,
                 parent=self
             )
-        else:
-            InfoBar.warning(
-                "警告",
-                "文件夹中没有找到图片文件",
-                duration=2000,
-                parent=self
-            )
+        finally:
+            self.selectFolderButton.setEnabled(True)
+            self.pasteFolderButton.setEnabled(True)
     
     def updateCategoryList(self):
         """更新类别列表"""
@@ -860,6 +1726,7 @@ class ImageLabelInterface(GalleryInterface):
         self.updateShortcutButtons()
         self.registerShortcuts()
         self.updateAllCategoryCardColors()
+        self.refreshFullscreenLabelWindow(refresh_categories=True)
     
     def updateShortcutButtons(self):
         """更新快捷键按钮"""
@@ -943,19 +1810,55 @@ class ImageLabelInterface(GalleryInterface):
     def onThemeChanged(self, theme):
         """主题变化时的处理"""
         self.updateAllCategoryCardColors()
+        self.refreshFullscreenLabelWindow(refresh_categories=True)
     
     def updateImageList(self):
         """更新图片列表"""
-        self.imageListCombo.blockSignals(True)  # 阻止信号触发
+        self._imageListPopulateToken += 1
+        token = self._imageListPopulateToken
+
+        self.imageListCombo.blockSignals(True)
         self.imageListCombo.clear()
-        for i, img_file in enumerate(self.image_files):
+        total = len(self.image_files)
+        if total == 0:
+            self.imageListCombo.blockSignals(False)
+            return
+
+        # 先快速填充首批，避免一次性大量 addItem 导致界面卡顿
+        first_batch_end = max(200, self.current_index + 1 if self.current_index >= 0 else 1)
+        first_batch_end = min(total, first_batch_end)
+        for i in range(first_batch_end):
+            img_file = self.image_files[i]
             label = self.project.get_image_label(img_file) if self.project else None
-            if label:
-                display_text = f"{i+1}. {img_file.name} [{label}]"
-            else:
-                display_text = f"{i+1}. {img_file.name}"
+            display_text = f"{i+1}. {img_file.name} [{label}]" if label else f"{i+1}. {img_file.name}"
             self.imageListCombo.addItem(display_text, str(img_file))
-        self.imageListCombo.blockSignals(False)  # 恢复信号
+        self.imageListCombo.blockSignals(False)
+
+        if 0 <= self.current_index < self.imageListCombo.count():
+            self.imageListCombo.setCurrentIndex(self.current_index)
+
+        if first_batch_end < total:
+            QTimer.singleShot(0, lambda t=token, s=first_batch_end: self.appendImageListChunk(t, s))
+
+    def appendImageListChunk(self, token, start_index):
+        if token != self._imageListPopulateToken:
+            return
+
+        total = len(self.image_files)
+        if start_index >= total:
+            return
+
+        end_index = min(total, start_index + 400)
+        self.imageListCombo.blockSignals(True)
+        for i in range(start_index, end_index):
+            img_file = self.image_files[i]
+            label = self.project.get_image_label(img_file) if self.project else None
+            display_text = f"{i+1}. {img_file.name} [{label}]" if label else f"{i+1}. {img_file.name}"
+            self.imageListCombo.addItem(display_text, str(img_file))
+        self.imageListCombo.blockSignals(False)
+
+        if end_index < total:
+            QTimer.singleShot(0, lambda t=token, s=end_index: self.appendImageListChunk(t, s))
     
     def onImageSelected(self, index):
         """图片选择改变"""
@@ -989,13 +1892,14 @@ class ImageLabelInterface(GalleryInterface):
         
         # 更新图片列表显示（包含标记信息）
         self.imageListCombo.blockSignals(True)
-        self.imageListCombo.setCurrentIndex(self.current_index)
-        # 更新当前项的文本以显示标记
-        if label:
-            display_text = f"{self.current_index + 1}. {img_file.name} [{label}]"
-        else:
-            display_text = f"{self.current_index + 1}. {img_file.name}"
-        self.imageListCombo.setItemText(self.current_index, display_text)
+        if self.current_index < self.imageListCombo.count():
+            self.imageListCombo.setCurrentIndex(self.current_index)
+            # 更新当前项的文本以显示标记
+            if label:
+                display_text = f"{self.current_index + 1}. {img_file.name} [{label}]"
+            else:
+                display_text = f"{self.current_index + 1}. {img_file.name}"
+            self.imageListCombo.setItemText(self.current_index, display_text)
         self.imageListCombo.blockSignals(False)
         
         # 更新当前标记标签，显示颜色
@@ -1026,6 +1930,7 @@ class ImageLabelInterface(GalleryInterface):
         if self.project:
             labeled_count = len(self.project.labeled_images)
             self.exportInfoLabel.setText(f"已标记: {labeled_count} / {len(self.image_files)} 张图片")
+        self.refreshFullscreenLabelWindow()
     
     def prevImage(self):
         """上一张图片"""
@@ -1044,6 +1949,7 @@ class ImageLabelInterface(GalleryInterface):
         if self.current_index < 0 or self.current_index >= len(self.image_files):
             return
         
+        labeled_index = self.current_index
         img_file = self.image_files[self.current_index]
         self.project.label_image(img_file, category_name)
         
@@ -1058,11 +1964,12 @@ class ImageLabelInterface(GalleryInterface):
         # 更新图片列表显示
         label = self.project.get_image_label(img_file)
         self.imageListCombo.blockSignals(True)
-        if label:
-            display_text = f"{self.current_index + 1}. {img_file.name} [{label}]"
-        else:
-            display_text = f"{self.current_index + 1}. {img_file.name}"
-        self.imageListCombo.setItemText(self.current_index, display_text)
+        if labeled_index < self.imageListCombo.count():
+            if label:
+                display_text = f"{labeled_index + 1}. {img_file.name} [{label}]"
+            else:
+                display_text = f"{labeled_index + 1}. {img_file.name}"
+            self.imageListCombo.setItemText(labeled_index, display_text)
         self.imageListCombo.blockSignals(False)
         
         # 更新当前标记标签，显示颜色
@@ -1093,6 +2000,13 @@ class ImageLabelInterface(GalleryInterface):
             duration=1000,
             parent=self
         )
+
+        # 自动跳转到下一张（最后一张保持当前位置）
+        if labeled_index < len(self.image_files) - 1:
+            self.current_index = labeled_index + 1
+            self.loadCurrentImage()
+        else:
+            self.refreshFullscreenLabelWindow()
     
     def addCategory(self):
         """添加类别"""
@@ -1251,7 +2165,7 @@ class ImageLabelInterface(GalleryInterface):
         
         try:
             output_dir = self.project.export_labeled_images()
-            self.progressLabel.setText(f"已导出到: {output_dir}")
+            self.progressLabel.setText(f"导出目录:\n{output_dir}")
             
             InfoBar.success(
                 "成功",
@@ -1279,8 +2193,7 @@ class ImageLabelInterface(GalleryInterface):
             return
         
         output_dir = self.project.get_output_base_dir()
-        if not output_dir.exists():
-            output_dir = self.project.project_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         try:
             if sys.platform == "win32":

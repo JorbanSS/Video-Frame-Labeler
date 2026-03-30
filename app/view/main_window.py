@@ -75,24 +75,10 @@ class MainWindow(FluentWindow):
 
     def initNavigation(self):
         # add navigation items
-        t = Translator()
-        self.addSubInterface(self.homeInterface, FIF.HOME, self.tr('Home'))
-        self.addSubInterface(self.iconInterface, Icon.EMOJI_TAB_SYMBOLS, t.icons)
-        self.navigationInterface.addSeparator()
-
+        # 仅保留核心页面入口
         pos = NavigationItemPosition.SCROLL
         self.addSubInterface(self.videoFrameInterface, FIF.VIDEO, "视频帧提取", pos)
         self.addSubInterface(self.imageLabelInterface, FIF.TAG, "图片标记", pos)
-        self.addSubInterface(self.basicInputInterface, FIF.CHECKBOX,t.basicInput, pos)
-        self.addSubInterface(self.dateTimeInterface, FIF.DATE_TIME, t.dateTime, pos)
-        self.addSubInterface(self.dialogInterface, FIF.MESSAGE, t.dialogs, pos)
-        self.addSubInterface(self.layoutInterface, FIF.LAYOUT, t.layout, pos)
-        self.addSubInterface(self.menuInterface, Icon.MENU, t.menus, pos)
-        self.addSubInterface(self.navigationViewInterface, FIF.MENU, t.navigation, pos)
-        self.addSubInterface(self.scrollInterface, FIF.SCROLL, t.scroll, pos)
-        self.addSubInterface(self.statusInfoInterface, FIF.CHAT, t.statusInfo, pos)
-        self.addSubInterface(self.textInterface, Icon.TEXT, t.text, pos)
-        self.addSubInterface(self.viewInterface, Icon.GRID, t.view, pos)
 
         # add theme toggle button to bottom
         self.navigationInterface.addItem(

@@ -60,7 +60,7 @@ class Config(QConfig):
     # Video frame extraction settings
     extractionMode = OptionsConfigItem("VideoFrameExtraction", "Mode", "fps", 
                                      OptionsValidator(["fps", "interval", "frame_count"]))
-    extractionFps = RangeConfigItem("VideoFrameExtraction", "Fps", 10, RangeValidator(1, 600))
+    extractionFps = RangeConfigItem("VideoFrameExtraction", "Fps", 20, RangeValidator(1, 600))
     extractionInterval = RangeConfigItem("VideoFrameExtraction", "Interval", 1, RangeValidator(1, 3600))
     extractionFrameCount = RangeConfigItem("VideoFrameExtraction", "FrameCount", 100, RangeValidator(1, 10000))
     outputFormat = OptionsConfigItem("VideoFrameExtraction", "OutputFormat", "png", 

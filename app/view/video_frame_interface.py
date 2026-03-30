@@ -4,10 +4,11 @@ import sys
 import subprocess
 import json
 import re
+import shutil
 from pathlib import Path
 from datetime import timedelta
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QStandardPaths
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, 
                              QFileDialog, QLabel, QSpinBox, QComboBox, 
                              QPushButton, QProgressBar, QTextEdit, QGroupBox,
@@ -16,7 +17,7 @@ from qfluentwidgets import (CardWidget, PushButton, SpinBox, ComboBox,
                            StrongBodyLabel, BodyLabel, TitleLabel, 
                            StateToolTip, InfoBar, InfoBarPosition,
                            FluentIcon as FIF, TextEdit, ProgressBar, LineEdit,
-                           RadioButton, CheckBox)
+                           RadioButton)
 
 from .gallery_interface import GalleryInterface
 from ..common.config import cfg
@@ -119,7 +120,7 @@ class FrameExtractionWorker(QThread):
         self.videoPath = videoPath
         self.outputDir = outputDir
         self.settings = settings
-        self.isRunning = True
+        self._running = True
     
     def run(self):
         try:
@@ -132,7 +133,8 @@ class FrameExtractionWorker(QThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                encoding='utf-8'
+                encoding='utf-8',
+                errors='replace'
             )
             
             # 读取输出并计算进度
@@ -144,7 +146,7 @@ class FrameExtractionWorker(QThread):
             frame_pattern = re.compile(r'frame\s*=\s*(\d+)')
             
             for line in process.stdout:
-                if not self.isRunning:
+                if not self._running:
                     process.terminate()
                     break
                 
@@ -193,7 +195,7 @@ class FrameExtractionWorker(QThread):
         # 帧率设置
         extraction_mode = self.settings.get('extraction_mode', 'fps')
         if extraction_mode == 'fps':
-            fps = self.settings.get('fps', 10) / 10.0  # Convert back from integer
+            fps = self.settings.get('fps', 20) / 10.0  # Convert back from integer
             cmd.extend(['-vf', f'fps={fps}'])
         elif extraction_mode == 'interval':
             interval = self.settings.get('interval', 1)
@@ -206,14 +208,6 @@ class FrameExtractionWorker(QThread):
             cmd.extend(['-vf', f'select=not(mod(n\\,{frame_interval}))', '-vsync', 'vfr'])
         
         # 图片尺寸设置
-        if self.settings.get('resize_enabled'):
-            width = self.settings.get('resize_width', 1920)
-            height = self.settings.get('resize_height', 1080)
-            # 更新vf参数
-            vf_index = cmd.index('-vf')
-            vf_value = cmd[vf_index + 1]
-            cmd[vf_index + 1] = f"{vf_value},scale={width}:{height}"
-        
         # 输出文件
         cmd.append(outputPattern)
         
@@ -227,7 +221,7 @@ class FrameExtractionWorker(QThread):
         
         if extraction_mode == 'fps':
             # 按帧率提取
-            fps = self.settings.get('fps', 10) / 10.0
+            fps = self.settings.get('fps', 20) / 10.0
             return max(1, int(video_duration * fps))
         elif extraction_mode == 'interval':
             # 按时间间隔提取
@@ -238,7 +232,7 @@ class FrameExtractionWorker(QThread):
             return self.settings.get('frame_count', 100)
     
     def stop(self):
-        self.isRunning = False
+        self._running = False
 
 
 class VideoFrameInterface(GalleryInterface):
@@ -256,6 +250,8 @@ class VideoFrameInterface(GalleryInterface):
         self.videoInfo = {}
         self.extractionWorker = None
         self.estimatedImages = 0
+        self.settingsGroup = None
+        self.outputGroup = None
         self.controlGroup = None  # 保存控制组的引用
         
         self.loadSettings()
@@ -272,7 +268,7 @@ class VideoFrameInterface(GalleryInterface):
         )
         
         # 提取设置区域
-        settingsGroup = self.addExampleCard(
+        self.settingsGroup = self.addExampleCard(
             title="提取设置",
             widget=self.createExtractionSettingsWidget(),
             sourcePath="",
@@ -280,7 +276,7 @@ class VideoFrameInterface(GalleryInterface):
         )
         
         # 输出设置区域
-        outputGroup = self.addExampleCard(
+        self.outputGroup = self.addExampleCard(
             title="输出设置",
             widget=self.createOutputSettingsWidget(),
             sourcePath="",
@@ -295,6 +291,8 @@ class VideoFrameInterface(GalleryInterface):
             stretch=1  # 让组件占满可用宽度
         )
     
+        self.setExtractionSectionsVisible(False)
+
     def createVideoSelectionWidget(self):
         """ 创建视频选择组件 """
         widget = QWidget()
@@ -390,6 +388,7 @@ class VideoFrameInterface(GalleryInterface):
         self.fpsSpinBox.valueChanged.connect(self.updateEstimatedCount)
         self.intervalSpinBox.valueChanged.connect(self.updateEstimatedCount)
         self.frameCountSpinBox.valueChanged.connect(self.updateEstimatedCount)
+        self.updateModeInputState()
 
         return widget
     
@@ -443,46 +442,16 @@ class VideoFrameInterface(GalleryInterface):
         if not outputDir:
             outputDir = str(Path.home() / "VideoFrames")
         self.outputDirEdit.setText(outputDir)
-        
-        self.selectOutputDirButton = PushButton("浏览", self, FIF.FOLDER)
-        self.selectOutputDirButton.clicked.connect(self.selectOutputDirectory)
+        self.outputDirEdit.setReadOnly(True)
+        self.outputDirEdit.setClearButtonEnabled(False)
         
         self.copyOutputDirButton = PushButton("复制", self, FIF.COPY)
         self.copyOutputDirButton.clicked.connect(self.copyOutputDirectory)
         
         outputDirLayout.addWidget(outputDirLabel)
         outputDirLayout.addWidget(self.outputDirEdit)
-        outputDirLayout.addWidget(self.selectOutputDirButton)
         outputDirLayout.addWidget(self.copyOutputDirButton)
         layout.addLayout(outputDirLayout)
-        
-        # 图片尺寸设置
-        resizeLayout = QHBoxLayout()
-        self.resizeCheckBox = CheckBox("调整输出图片尺寸", self)
-        self.resizeCheckBox.setChecked(cfg.resizeEnabled.value)  # 从配置加载
-        resizeLayout.addWidget(self.resizeCheckBox)
-        
-        # 尺寸输入
-        self.widthSpinBox = SpinBox(self)
-        self.widthSpinBox.setRange(1, 7680)
-        self.widthSpinBox.setValue(cfg.resizeWidth.value)  # 从配置加载
-        self.widthSpinBox.setEnabled(False)
-        
-        self.heightSpinBox = SpinBox(self)
-        self.heightSpinBox.setRange(1, 4320)
-        self.heightSpinBox.setValue(cfg.resizeHeight.value)  # 从配置加载
-        self.heightSpinBox.setEnabled(False)
-        
-        resizeLayout.addWidget(BodyLabel("宽度:", self))
-        resizeLayout.addWidget(self.widthSpinBox)
-        resizeLayout.addWidget(BodyLabel("高度:", self))
-        resizeLayout.addWidget(self.heightSpinBox)
-        resizeLayout.addStretch()
-        
-        layout.addLayout(resizeLayout)
-        
-        # 连接信号
-        self.resizeCheckBox.toggled.connect(self.onResizeToggled)
         
         return widget
     
@@ -545,12 +514,14 @@ class VideoFrameInterface(GalleryInterface):
     
     def onModeChanged(self, checked):
         """ 模式切换处理 """
+        self.updateModeInputState()
         self.updateEstimatedCount()
-    
-    def onResizeToggled(self, checked):
-        """ 尺寸调整切换处理 """
-        self.widthSpinBox.setEnabled(checked)
-        self.heightSpinBox.setEnabled(checked)
+
+    def updateModeInputState(self):
+        """仅允许编辑当前选中的提取模式参数。"""
+        self.fpsSpinBox.setEnabled(self.fpsModeRadio.isChecked())
+        self.intervalSpinBox.setEnabled(self.intervalModeRadio.isChecked())
+        self.frameCountSpinBox.setEnabled(self.frameCountModeRadio.isChecked())
     
     def updateEstimatedCount(self):
         """ 更新预计图片数量 """
@@ -587,15 +558,19 @@ class VideoFrameInterface(GalleryInterface):
     
     def selectVideoFile(self):
         """ 选择视频文件 """
+        startDir = self.resolveDialogDirectory(self.videoPath, self.outputDirEdit.text())
         filePath, _ = QFileDialog.getOpenFileName(
             self,
             "选择视频文件",
-            "",
+            startDir,
             "视频文件 (*.mp4 *.avi *.mov *.mkv *.flv *.wmv *.webm);;所有文件 (*.*)"
         )
         
         if filePath:
             self.videoPath = filePath
+            self.setExtractionSectionsVisible(True)
+            projectPaths = self.buildProjectPaths(filePath)
+            self.outputDirEdit.setText(str(projectPaths['origin_dir']))
             self.loadVideoInfo(filePath)
             self.startButton.setEnabled(True)
             self.updateEstimatedCount()
@@ -614,7 +589,23 @@ class VideoFrameInterface(GalleryInterface):
     def copyOutputDirectory(self):
         """ 复制输出目录到剪贴板 """
         from PyQt5.QtWidgets import QApplication
-        outputDir = self.outputDirEdit.text()
+        try:
+            paths = self.prepareProjectStructure(self.videoPath)
+        except Exception as e:
+            InfoBar.error(
+                "错误",
+                f"准备项目目录失败: {str(e)}",
+                duration=3000,
+                parent=self
+            )
+            return
+
+        self.videoPath = str(paths['video_path'])
+        outputDir = str(paths['origin_dir'])
+        self.outputDirEdit.setText(outputDir)
+        if self.videoInfo:
+            self.videoInfo['file_path'] = self.videoPath
+            self.videoInfoWidget.updateInfo(self.videoInfo)
         if outputDir:
             clipboard = QApplication.clipboard()
             clipboard.setText(outputDir)
@@ -632,6 +623,131 @@ class VideoFrameInterface(GalleryInterface):
                 parent=self
             )
     
+    def resolveDialogDirectory(self, *candidates):
+        """Select a valid directory for file dialogs."""
+        for path in candidates:
+            if not path:
+                continue
+
+            candidate = str(path).strip()
+            if not candidate:
+                continue
+
+            if os.path.isfile(candidate):
+                candidate = os.path.dirname(candidate)
+
+            if os.path.isdir(candidate):
+                return candidate
+
+        for location in (
+            QStandardPaths.MoviesLocation,
+            QStandardPaths.DocumentsLocation,
+            QStandardPaths.HomeLocation
+        ):
+            candidate = QStandardPaths.writableLocation(location)
+            if candidate and os.path.isdir(candidate):
+                return candidate
+
+        home = str(Path.home())
+        if os.path.isdir(home):
+            return home
+
+        return os.getcwd()
+
+    def setExtractionSectionsVisible(self, visible: bool):
+        """Show/hide all sections except video selection."""
+        for card in (self.settingsGroup, self.outputGroup, self.controlGroup):
+            if card:
+                card.setVisible(visible)
+
+    def buildProjectPaths(self, videoPath):
+        """Build the standardized project folder structure paths."""
+        videoPath = Path(videoPath)
+        parentDir = videoPath.parent
+
+        # 已在同名项目目录中时，直接复用当前目录，避免再嵌套一层同名目录
+        if parentDir.name.lower() == videoPath.stem.lower():
+            projectDir = parentDir
+            targetVideoPath = videoPath
+        else:
+            projectDir = parentDir / videoPath.stem
+            targetVideoPath = projectDir / videoPath.name
+
+        return {
+            'project_dir': projectDir,
+            'video_path': targetVideoPath,
+            'origin_dir': projectDir / 'origin_pic',
+            'labeled_dir': projectDir / 'labeled_pic'
+        }
+
+    def prepareProjectStructure(self, sourceVideoPath):
+        """Create project folder, move video into it, and prepare output folders."""
+        sourcePath = Path(sourceVideoPath)
+        if not sourcePath.exists():
+            raise FileNotFoundError(f"视频文件不存在: {sourcePath}")
+
+        paths = self.buildProjectPaths(sourcePath)
+        paths['project_dir'].mkdir(parents=True, exist_ok=True)
+        paths['origin_dir'].mkdir(parents=True, exist_ok=True)
+        paths['labeled_dir'].mkdir(parents=True, exist_ok=True)
+
+        targetVideoPath = paths['video_path']
+        if sourcePath.resolve() != targetVideoPath.resolve():
+            if targetVideoPath.exists():
+                suffix = sourcePath.suffix
+                stem = sourcePath.stem
+                index = 1
+                while True:
+                    candidate = paths['project_dir'] / f"{stem}_{index}{suffix}"
+                    if not candidate.exists():
+                        shutil.move(str(sourcePath), str(candidate))
+                        sourcePath = candidate
+                        break
+                    index += 1
+            else:
+                shutil.move(str(sourcePath), str(targetVideoPath))
+                sourcePath = targetVideoPath
+
+        paths['video_path'] = sourcePath
+        return paths
+
+    def copyOutputDirectory(self):
+        """复制输出目录到剪贴板（覆盖旧实现）。"""
+        from PyQt5.QtWidgets import QApplication
+        try:
+            paths = self.prepareProjectStructure(self.videoPath)
+        except Exception as e:
+            InfoBar.error(
+                "错误",
+                f"准备项目目录失败: {str(e)}",
+                duration=3000,
+                parent=self
+            )
+            return
+
+        self.videoPath = str(paths['video_path'])
+        outputDir = str(paths['origin_dir'])
+        self.outputDirEdit.setText(outputDir)
+        if self.videoInfo:
+            self.videoInfo['file_path'] = self.videoPath
+            self.videoInfoWidget.updateInfo(self.videoInfo)
+        if outputDir:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(outputDir)
+            InfoBar.success(
+                "成功",
+                "输出目录已复制到剪贴板！",
+                duration=1500,
+                parent=self
+            )
+        else:
+            InfoBar.warning(
+                "警告",
+                "输出目录为空",
+                duration=1500,
+                parent=self
+            )
+
     def loadVideoInfo(self, filePath):
         """ 加载视频信息 """
         try:
@@ -648,7 +764,13 @@ class VideoFrameInterface(GalleryInterface):
                 filePath
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             
             if result.returncode == 0:
                 data = json.loads(result.stdout)
@@ -736,9 +858,6 @@ class VideoFrameInterface(GalleryInterface):
             'format': self.formatComboBox.currentText(),
             'prefix': self.prefixEdit.text() or 'frame',
             'digits': self.digitsSpinBox.value(),
-            'resize_enabled': self.resizeCheckBox.isChecked(),
-            'resize_width': self.widthSpinBox.value(),
-            'resize_height': self.heightSpinBox.value(),
             'total_frames': self.videoInfo.get('total_frames', 100),
             'duration': self.videoInfo.get('duration', 0)
         }
@@ -757,9 +876,70 @@ class VideoFrameInterface(GalleryInterface):
         self.extractionWorker.log.connect(self.appendLog)
         self.extractionWorker.start()
     
+    def startExtraction(self):
+        """开始提取帧（覆盖旧实现）。"""
+        if not self.videoPath:
+            InfoBar.warning(
+                "警告",
+                "请先选择视频文件！",
+                duration=2000,
+                parent=self
+            )
+            return
+
+        try:
+            paths = self.prepareProjectStructure(self.videoPath)
+        except Exception as e:
+            InfoBar.error(
+                "错误",
+                f"准备项目目录失败: {str(e)}",
+                duration=3000,
+                parent=self
+            )
+            return
+
+        self.videoPath = str(paths['video_path'])
+        outputDir = str(paths['origin_dir'])
+        self.outputDirEdit.setText(outputDir)
+
+        if self.videoInfo:
+            self.videoInfo['file_path'] = self.videoPath
+            self.videoInfoWidget.updateInfo(self.videoInfo)
+
+        os.makedirs(outputDir, exist_ok=True)
+
+        settings = {
+            'extraction_mode': 'fps' if self.fpsModeRadio.isChecked() else ('interval' if self.intervalModeRadio.isChecked() else 'frame_count'),
+            'fps': self.fpsSpinBox.value(),
+            'interval': self.intervalSpinBox.value(),
+            'frame_count': self.frameCountSpinBox.value(),
+            'format': self.formatComboBox.currentText(),
+            'prefix': self.prefixEdit.text() or 'frame',
+            'digits': self.digitsSpinBox.value(),
+            'total_frames': self.videoInfo.get('total_frames', 100),
+            'duration': self.videoInfo.get('duration', 0)
+        }
+
+        self.startButton.setEnabled(False)
+        self.stopButton.setEnabled(True)
+        self.progressBar.setVisible(True)
+        self.progressBar.setValue(0)
+        self.logTextEdit.clear()
+
+        self.extractionWorker = FrameExtractionWorker(self.videoPath, outputDir, settings)
+        self.extractionWorker.progress.connect(self.updateProgress)
+        self.extractionWorker.finished.connect(self.extractionFinished)
+        self.extractionWorker.log.connect(self.appendLog)
+        self.extractionWorker.start()
+
     def stopExtraction(self):
         """ 停止提取 """
-        if self.extractionWorker and self.extractionWorker.isRunning():
+        if not self.extractionWorker:
+            return
+
+        running_attr = getattr(self.extractionWorker, "isRunning", None)
+        is_running = running_attr() if callable(running_attr) else bool(running_attr)
+        if is_running:
             self.extractionWorker.stop()
             self.extractionWorker.wait()
             
@@ -863,9 +1043,6 @@ class VideoFrameInterface(GalleryInterface):
             cfg.numberingDigits.value = self.digitsSpinBox.value()
             
             # 尺寸设置
-            cfg.resizeEnabled.value = self.resizeCheckBox.isChecked()
-            cfg.resizeWidth.value = self.widthSpinBox.value()
-            cfg.resizeHeight.value = self.heightSpinBox.value()
             
             # 保存到配置文件
             cfg.save()
@@ -892,6 +1069,59 @@ class VideoFrameInterface(GalleryInterface):
         self.digitsSpinBox.valueChanged.connect(self.saveSettings)
         
         # 尺寸设置改变
-        self.resizeCheckBox.toggled.connect(self.saveSettings)
-        self.widthSpinBox.valueChanged.connect(self.saveSettings)
-        self.heightSpinBox.valueChanged.connect(self.saveSettings)
+
+    def copyOutputDirectory(self):
+        """复制输出目录到剪贴板。"""
+        from PyQt5.QtWidgets import QApplication
+        outputDir = self.outputDirEdit.text()
+        if outputDir:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(outputDir)
+            InfoBar.success("成功", "输出目录已复制到剪贴板！", duration=1500, parent=self)
+        else:
+            InfoBar.warning("警告", "输出目录为空", duration=1500, parent=self)
+
+    def startExtraction(self):
+        """开始提取帧。"""
+        if not self.videoPath:
+            InfoBar.warning("警告", "请先选择视频文件！", duration=2000, parent=self)
+            return
+
+        try:
+            paths = self.prepareProjectStructure(self.videoPath)
+        except Exception as e:
+            InfoBar.error("错误", f"准备项目目录失败: {str(e)}", duration=3000, parent=self)
+            return
+
+        self.videoPath = str(paths['video_path'])
+        outputDir = str(paths['origin_dir'])
+        self.outputDirEdit.setText(outputDir)
+        if self.videoInfo:
+            self.videoInfo['file_path'] = self.videoPath
+            self.videoInfoWidget.updateInfo(self.videoInfo)
+
+        os.makedirs(outputDir, exist_ok=True)
+
+        settings = {
+            'extraction_mode': 'fps' if self.fpsModeRadio.isChecked() else ('interval' if self.intervalModeRadio.isChecked() else 'frame_count'),
+            'fps': self.fpsSpinBox.value(),
+            'interval': self.intervalSpinBox.value(),
+            'frame_count': self.frameCountSpinBox.value(),
+            'format': self.formatComboBox.currentText(),
+            'prefix': self.prefixEdit.text() or 'frame',
+            'digits': self.digitsSpinBox.value(),
+            'total_frames': self.videoInfo.get('total_frames', 100),
+            'duration': self.videoInfo.get('duration', 0)
+        }
+
+        self.startButton.setEnabled(False)
+        self.stopButton.setEnabled(True)
+        self.progressBar.setVisible(True)
+        self.progressBar.setValue(0)
+        self.logTextEdit.clear()
+
+        self.extractionWorker = FrameExtractionWorker(self.videoPath, outputDir, settings)
+        self.extractionWorker.progress.connect(self.updateProgress)
+        self.extractionWorker.finished.connect(self.extractionFinished)
+        self.extractionWorker.log.connect(self.appendLog)
+        self.extractionWorker.start()
