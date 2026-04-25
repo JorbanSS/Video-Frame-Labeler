@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "name": "匹克球动作",
+      "categories": [
+        {
+          "name": "发球",
+          "color": "#3498db",
+          "shortcut_key": "Z"
+        },
+        {
+          "name": "网前丁克",
+          "color": "#2ecc71",
+          "shortcut_key": "X"
+        },
+        {
+          "name": "抽球/高压",
+          "color": "#e74c3c",
+          "shortcut_key": "C"
+        },
+        {
+          "name": "死球/行走",
+          "color": "#f1c40f",
+          "shortcut_key": "V"
+        },
+        {
+          "name": "特写/庆祝",
+          "color": "#9b59b6",
+          "shortcut_key": "B"
+        }
+      ]
+    }
+  ]
+}

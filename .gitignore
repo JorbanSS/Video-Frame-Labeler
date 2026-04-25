@@ -10,6 +10,7 @@
 .idea/
 
 # 忽略python缓存文件
+__pycache__
 */__pycache__
 *.py[cod]
 
@@ -36,3 +37,6 @@ PySide6_Fluent_Widgets.egg-info/
 
 # 忽略虚拟环境文件夹
 .venv/
+
+# 忽略数据集
+data/
