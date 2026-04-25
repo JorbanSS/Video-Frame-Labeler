@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "time": "2026-04-25 17:44:50",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\augmented",
+      "total_files": 836,
+      "categories": {
+        "closeup_celebration": 51,
+        "dinking": 134,
+        "drive_smash": 44,
+        "idle_walking": 414,
+        "serve": 193
+      },
+      "projects": 4
+    },
+    {
+      "time": "2026-04-25 15:43:02",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\augmented",
+      "total_files": 836,
+      "categories": {
+        "closeup_celebration": 51,
+        "dinking": 134,
+        "drive_smash": 44,
+        "idle_walking": 414,
+        "serve": 193
+      },
+      "projects": 3
+    }
+  ]
+}

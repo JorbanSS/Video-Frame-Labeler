@@ -38,10 +38,13 @@ from qfluentwidgets import (
 )
 
 from .gallery_interface import GalleryInterface
+from ..common.config import cfg
+from ..common.signal_bus import signalBus
 
 
 INVALID_CATEGORY_NAME = "无效类"
 INVALID_CATEGORY_COLOR = "#000000"
+INVALID_CATEGORY_SHORTCUT = "Space"
 DEFAULT_CATEGORY_COLORS = [
     ("蓝色", "#3498db"),
     ("绿色", "#2ecc71"),
@@ -211,7 +214,12 @@ class CategoryPresetStore:
 
 class LabelProject:
     def __init__(self, project_dir):
-        self.project_dir = Path(project_dir)
+        project_path = Path(project_dir)
+        if project_path.name == "origin_pic":
+            project_path = project_path.parent
+
+        self.project_dir = project_path
+        self.origin_dir = self.project_dir / "origin_pic"
         self.categories = []
         self.current_image_index = 0
         self.labeled_images = {}
@@ -223,8 +231,14 @@ class LabelProject:
     def get_legacy_config_path(self):
         return self.project_dir / "label_config.json"
 
+    def get_legacy_config_paths(self):
+        return [
+            self.project_dir / "label_config.json",
+            self.origin_dir / "label_config.json",
+        ]
+
     def get_output_base_dir(self):
-        return self.project_dir.parent / "labeled_pic"
+        return self.project_dir / "labeled_pic"
 
     @staticmethod
     def is_reserved_category(name):
@@ -266,7 +280,7 @@ class LabelProject:
                 name=INVALID_CATEGORY_NAME,
                 display_name=INVALID_CATEGORY_NAME,
                 color=INVALID_CATEGORY_COLOR,
-                shortcut_key="",
+                shortcut_key=INVALID_CATEGORY_SHORTCUT,
             )
         ] + cleaned
 
@@ -302,9 +316,11 @@ class LabelProject:
 
     def load_config(self):
         config_path = self.get_config_path()
-        legacy_config_path = self.get_legacy_config_path()
-        if (not config_path.exists()) and legacy_config_path.exists():
-            config_path = legacy_config_path
+        if not config_path.exists():
+            for legacy_config_path in self.get_legacy_config_paths():
+                if legacy_config_path.exists():
+                    config_path = legacy_config_path
+                    break
 
         migrated = False
         if config_path.exists():
@@ -324,9 +340,12 @@ class LabelProject:
                     abs_path = Path(image_path)
                     if abs_path.is_absolute():
                         try:
-                            rel_path = str(abs_path.relative_to(self.project_dir))
+                            rel_path = str(abs_path.relative_to(self.origin_dir))
                         except ValueError:
-                            rel_path = image_path
+                            try:
+                                rel_path = str(abs_path.relative_to(self.project_dir))
+                            except ValueError:
+                                rel_path = image_path
                     else:
                         rel_path = image_path
 
@@ -369,7 +388,10 @@ class LabelProject:
     def get_image_files(self):
         image_extensions = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff")
         images = []
-        with os.scandir(self.project_dir) as entries:
+        if not self.origin_dir.exists():
+            return images
+
+        with os.scandir(self.origin_dir) as entries:
             for entry in entries:
                 if not entry.is_file():
                     continue
@@ -445,7 +467,7 @@ class LabelProject:
                 name=INVALID_CATEGORY_NAME,
                 display_name=INVALID_CATEGORY_NAME,
                 color=INVALID_CATEGORY_COLOR,
-                shortcut_key="",
+                shortcut_key=INVALID_CATEGORY_SHORTCUT,
             )
         ]
         used_names = {INVALID_CATEGORY_NAME}
@@ -494,13 +516,13 @@ class LabelProject:
         canonical = self.resolve_category_name(category_name_or_alias)
         if not self.get_category(canonical):
             return False
-        rel_path = str(Path(image_path).relative_to(self.project_dir))
+        rel_path = str(Path(image_path).relative_to(self.origin_dir))
         self.labeled_images[rel_path] = canonical
         self.save_config()
         return True
 
     def get_image_label(self, image_path):
-        rel_path = str(Path(image_path).relative_to(self.project_dir))
+        rel_path = str(Path(image_path).relative_to(self.origin_dir))
         return self.labeled_images.get(rel_path)
 
     def create_output_folders(self):
@@ -563,7 +585,7 @@ class LabelProject:
         output_dir, category_dirs = self.create_output_folders()
 
         for rel_path, category_name in self.labeled_images.items():
-            image_file = self.project_dir / rel_path
+            image_file = self.origin_dir / rel_path
             if image_file.exists():
                 category = self.get_category(category_name)
                 if category:
@@ -1704,6 +1726,7 @@ class ImageLabelInterface(GalleryInterface):
         self.bindContentCards()
         self.updateContentVisibility()
         self.refreshPresetList()
+        signalBus.workDirectoryChanged.connect(lambda _: self.refreshWorkDirectoryProjects())
 
     def initUI(self):
         self.addExampleCard(
@@ -1764,7 +1787,7 @@ class ImageLabelInterface(GalleryInterface):
         buttonLayout = QHBoxLayout()
         buttonLayout.setSpacing(15)
 
-        self.selectFolderButton = PushButton("选择图片文件夹", self, FIF.FOLDER)
+        self.selectFolderButton = PushButton("选择项目文件夹", self, FIF.FOLDER)
         self.selectFolderButton.clicked.connect(self.selectProjectFolder)
         buttonLayout.addWidget(self.selectFolderButton)
 
@@ -1773,6 +1796,25 @@ class ImageLabelInterface(GalleryInterface):
         buttonLayout.addWidget(self.pasteFolderButton)
         buttonLayout.addStretch()
         layout.addLayout(buttonLayout)
+
+        quickLayout = QHBoxLayout()
+        quickLayout.setSpacing(10)
+        quickLayout.addWidget(BodyLabel("工作目录项目:", self))
+        self.quickProjectComboBox = ComboBox(self)
+        self.quickProjectComboBox.setMinimumWidth(360)
+        quickLayout.addWidget(self.quickProjectComboBox, 1)
+
+        self.loadQuickProjectButton = PushButton("选择", self, FIF.TAG)
+        self.loadQuickProjectButton.clicked.connect(self.selectQuickProject)
+        quickLayout.addWidget(self.loadQuickProjectButton)
+
+        self.refreshQuickProjectButton = PushButton("刷新", self, FIF.ROTATE)
+        self.refreshQuickProjectButton.clicked.connect(self.refreshWorkDirectoryProjects)
+        quickLayout.addWidget(self.refreshQuickProjectButton)
+        layout.addLayout(quickLayout)
+
+        self.quickProjectPaths = {}
+        self.refreshWorkDirectoryProjects()
 
         self.folderPathLabel = BodyLabel("未选择", self)
         self.folderPathLabel.setWordWrap(True)
@@ -1946,8 +1988,53 @@ class ImageLabelInterface(GalleryInterface):
         return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
     def selectProjectFolder(self):
-        startDir = self.resolveDialogDirectory(self.project.project_dir if self.project else None)
-        folderPath = QFileDialog.getExistingDirectory(self, "选择图片文件夹", startDir)
+        startDir = self.resolveDialogDirectory(
+            self.project.project_dir if self.project else None,
+            cfg.get(cfg.workDirectory),
+        )
+        folderPath = QFileDialog.getExistingDirectory(self, "选择项目文件夹", startDir)
+        if folderPath:
+            self.loadProjectFolder(folderPath)
+
+    def refreshWorkDirectoryProjects(self):
+        """Refresh quick project list from configured work directory."""
+        if not hasattr(self, "quickProjectComboBox"):
+            return
+
+        self.quickProjectComboBox.clear()
+        self.quickProjectPaths = {}
+
+        workDir = cfg.get(cfg.workDirectory)
+        if not workDir or not os.path.isdir(workDir):
+            self.quickProjectComboBox.addItem("未设置工作目录")
+            self.loadQuickProjectButton.setEnabled(False)
+            return
+
+        projects = []
+        with os.scandir(workDir) as entries:
+            for entry in entries:
+                if entry.is_dir() and not entry.name.startswith("."):
+                    projects.append(Path(entry.path))
+
+        projects.sort(key=self.getPathModifiedTime, reverse=True)
+        for path in projects:
+            self.quickProjectComboBox.addItem(path.name)
+            self.quickProjectPaths[path.name] = str(path)
+
+        if not projects:
+            self.quickProjectComboBox.addItem("工作目录下未找到文件夹")
+
+        self.loadQuickProjectButton.setEnabled(bool(projects))
+
+    def getPathModifiedTime(self, path):
+        try:
+            return Path(path).stat().st_mtime
+        except OSError:
+            return 0
+
+    def selectQuickProject(self):
+        display = self.quickProjectComboBox.currentText()
+        folderPath = self.quickProjectPaths.get(display)
         if folderPath:
             self.loadProjectFolder(folderPath)
 
@@ -2003,6 +2090,11 @@ class ImageLabelInterface(GalleryInterface):
         self.loadProjectFolder(str(path))
 
     def loadProjectFolder(self, folderPath):
+        projectPath = Path(folderPath)
+        if projectPath.name == "origin_pic":
+            projectPath = projectPath.parent
+        folderPath = str(projectPath)
+
         self.folderPathLabel.setText(folderPath)
         self.selectFolderButton.setEnabled(False)
         self.pasteFolderButton.setEnabled(False)
@@ -2062,7 +2154,7 @@ class ImageLabelInterface(GalleryInterface):
         for category in self.project.categories:
             if category.name == INVALID_CATEGORY_NAME:
                 category.color = INVALID_CATEGORY_COLOR
-                category.shortcut_key = ""
+                category.shortcut_key = INVALID_CATEGORY_SHORTCUT
                 category.display_name = INVALID_CATEGORY_NAME
             elif not category.color:
                 category.color = "#3498db"

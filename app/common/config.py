@@ -37,6 +37,7 @@ class Config(QConfig):
     # folders
     downloadFolder = ConfigItem(
         "Folders", "Download", "app/download", FolderValidator())
+    workDirectory = ConfigItem("Folders", "WorkDirectory", "")
 
     # main window
     micaEnabled = ConfigItem("MainWindow", "MicaEnabled", isWin11(), BoolValidator())
@@ -66,6 +67,7 @@ class Config(QConfig):
     outputFormat = OptionsConfigItem("VideoFrameExtraction", "OutputFormat", "png", 
                                    OptionsValidator(["png", "jpg", "bmp", "tiff"]))
     outputDirectory = ConfigItem("VideoFrameExtraction", "OutputDirectory", "")
+    exportDirectory = ConfigItem("Export", "OutputDirectory", "")
     outputPrefix = ConfigItem("VideoFrameExtraction", "OutputPrefix", "frame")
     numberingDigits = RangeConfigItem("VideoFrameExtraction", "NumberingDigits", 6, RangeValidator(1, 10))
     resizeEnabled = ConfigItem("VideoFrameExtraction", "ResizeEnabled", False, BoolValidator())

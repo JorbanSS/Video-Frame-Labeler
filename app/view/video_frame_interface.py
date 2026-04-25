@@ -257,6 +257,7 @@ class VideoFrameInterface(GalleryInterface):
         self.loadSettings()
         self.initUI()
         self.connectSignals()
+        signalBus.workDirectoryChanged.connect(lambda _: self.refreshWorkDirectoryVideos())
         
     def initUI(self):
         # 视频选择和信息显示区域
@@ -304,6 +305,25 @@ class VideoFrameInterface(GalleryInterface):
         self.selectFileButton = PushButton("选择视频文件", self, FIF.VIDEO)
         self.selectFileButton.clicked.connect(self.selectVideoFile)
         layout.addWidget(self.selectFileButton)
+
+        quickLayout = QHBoxLayout()
+        quickLayout.setSpacing(10)
+        quickLayout.addWidget(BodyLabel("工作目录视频:", self))
+        self.quickVideoComboBox = ComboBox(self)
+        self.quickVideoComboBox.setMinimumWidth(360)
+        quickLayout.addWidget(self.quickVideoComboBox, 1)
+
+        self.loadQuickVideoButton = PushButton("选择", self, FIF.PLAY)
+        self.loadQuickVideoButton.clicked.connect(self.selectQuickVideo)
+        quickLayout.addWidget(self.loadQuickVideoButton)
+
+        self.refreshQuickVideoButton = PushButton("刷新", self, FIF.ROTATE)
+        self.refreshQuickVideoButton.clicked.connect(self.refreshWorkDirectoryVideos)
+        quickLayout.addWidget(self.refreshQuickVideoButton)
+        layout.addLayout(quickLayout)
+
+        self.quickVideoPaths = {}
+        self.refreshWorkDirectoryVideos()
         
         # 视频信息显示
         self.videoInfoWidget = VideoInfoWidget(self)
@@ -558,7 +578,11 @@ class VideoFrameInterface(GalleryInterface):
     
     def selectVideoFile(self):
         """ 选择视频文件 """
-        startDir = self.resolveDialogDirectory(self.videoPath, self.outputDirEdit.text())
+        startDir = self.resolveDialogDirectory(
+            self.videoPath,
+            cfg.get(cfg.workDirectory),
+            self.outputDirEdit.text()
+        )
         filePath, _ = QFileDialog.getOpenFileName(
             self,
             "选择视频文件",
@@ -567,13 +591,59 @@ class VideoFrameInterface(GalleryInterface):
         )
         
         if filePath:
-            self.videoPath = filePath
-            self.setExtractionSectionsVisible(True)
-            projectPaths = self.buildProjectPaths(filePath)
-            self.outputDirEdit.setText(str(projectPaths['origin_dir']))
-            self.loadVideoInfo(filePath)
-            self.startButton.setEnabled(True)
-            self.updateEstimatedCount()
+            self.loadVideoFile(filePath)
+
+    def refreshWorkDirectoryVideos(self):
+        """Refresh quick video list from configured work directory."""
+        if not hasattr(self, "quickVideoComboBox"):
+            return
+
+        self.quickVideoComboBox.clear()
+        self.quickVideoPaths = {}
+
+        workDir = cfg.get(cfg.workDirectory)
+        if not workDir or not os.path.isdir(workDir):
+            self.quickVideoComboBox.addItem("未设置工作目录")
+            self.loadQuickVideoButton.setEnabled(False)
+            return
+
+        video_extensions = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
+        videos = []
+        for path in Path(workDir).iterdir():
+            if path.is_file() and path.suffix.lower() in video_extensions:
+                videos.append(path)
+
+        videos.sort(key=self.getPathModifiedTime, reverse=True)
+        for path in videos:
+            display = str(path.relative_to(workDir))
+            self.quickVideoComboBox.addItem(display)
+            self.quickVideoPaths[display] = str(path)
+
+        if not videos:
+            self.quickVideoComboBox.addItem("工作目录下未找到视频")
+
+        self.loadQuickVideoButton.setEnabled(bool(videos))
+
+    def getPathModifiedTime(self, path):
+        try:
+            return Path(path).stat().st_mtime
+        except OSError:
+            return 0
+
+    def selectQuickVideo(self):
+        display = self.quickVideoComboBox.currentText()
+        filePath = self.quickVideoPaths.get(display)
+        if filePath:
+            self.loadVideoFile(filePath)
+
+    def loadVideoFile(self, filePath):
+        self.videoPath = filePath
+        self.setExtractionSectionsVisible(True)
+        projectPaths = self.buildProjectPaths(filePath)
+        self.outputDirEdit.setText(str(projectPaths['origin_dir']))
+        self.loadVideoInfo(filePath)
+        self.startButton.setEnabled(True)
+        self.updateEstimatedCount()
     
     def selectOutputDirectory(self):
         """ 选择输出目录 """
