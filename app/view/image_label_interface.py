@@ -45,6 +45,7 @@ from ..common.signal_bus import signalBus
 INVALID_CATEGORY_NAME = "无效类"
 INVALID_CATEGORY_COLOR = "#000000"
 INVALID_CATEGORY_SHORTCUT = "Space"
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff")
 DEFAULT_CATEGORY_COLORS = [
     ("蓝色", "#3498db"),
     ("绿色", "#2ecc71"),
@@ -223,6 +224,7 @@ class LabelProject:
         self.categories = []
         self.current_image_index = 0
         self.labeled_images = {}
+        self.category_counts = {}
         self.load_config()
 
     def get_config_path(self):
@@ -368,6 +370,8 @@ class LabelProject:
         if self.ensure_invalid_category():
             migrated = True
 
+        self.rebuild_category_counts()
+
         if migrated or not self.get_config_path().exists():
             self.save_config()
 
@@ -386,7 +390,6 @@ class LabelProject:
             print(f"保存配置失败: {e}")
 
     def get_image_files(self):
-        image_extensions = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff")
         images = []
         if not self.origin_dir.exists():
             return images
@@ -395,10 +398,15 @@ class LabelProject:
             for entry in entries:
                 if not entry.is_file():
                     continue
-                if entry.name.lower().endswith(image_extensions):
+                if entry.name.lower().endswith(IMAGE_EXTENSIONS):
                     images.append(Path(entry.path))
         images.sort(key=lambda x: x.name)
         return images
+
+    def rebuild_category_counts(self):
+        self.category_counts = {}
+        for category_name in self.labeled_images.values():
+            self.category_counts[category_name] = self.category_counts.get(category_name, 0) + 1
 
     def add_category(self, name, display_name, color="#3498db", shortcut_key=""):
         name = str(name or "").strip()
@@ -417,6 +425,7 @@ class LabelProject:
             )
         )
         self.ensure_invalid_category()
+        self.rebuild_category_counts()
         self.save_config()
         return True
 
@@ -428,6 +437,7 @@ class LabelProject:
         self.categories = [c for c in self.categories if c.name != canonical]
         self.labeled_images = {k: v for k, v in self.labeled_images.items() if v != canonical}
         self.ensure_invalid_category()
+        self.rebuild_category_counts()
         self.save_config()
         return True
 
@@ -458,6 +468,7 @@ class LabelProject:
                 break
 
         self.ensure_invalid_category()
+        self.rebuild_category_counts()
         self.save_config()
         return True
 
@@ -503,6 +514,7 @@ class LabelProject:
             for image_path, category_name in self.labeled_images.items()
             if category_name in valid_names
         }
+        self.rebuild_category_counts()
         self.save_config()
 
     def get_editable_categories(self):
@@ -510,16 +522,89 @@ class LabelProject:
 
     def get_category_count(self, category_name_or_alias):
         canonical = self.resolve_category_name(category_name_or_alias)
-        return sum(1 for value in self.labeled_images.values() if value == canonical)
+        return self.category_counts.get(canonical, 0)
 
-    def label_image(self, image_path, category_name_or_alias):
+    def label_image(self, image_path, category_name_or_alias, save=True):
         canonical = self.resolve_category_name(category_name_or_alias)
         if not self.get_category(canonical):
             return False
         rel_path = str(Path(image_path).relative_to(self.origin_dir))
+        previous = self.labeled_images.get(rel_path)
+        if previous == canonical:
+            if save:
+                self.save_config()
+            return True
+        if previous:
+            self.category_counts[previous] = max(0, self.category_counts.get(previous, 0) - 1)
         self.labeled_images[rel_path] = canonical
-        self.save_config()
+        self.category_counts[canonical] = self.category_counts.get(canonical, 0) + 1
+        if save:
+            self.save_config()
         return True
+
+    def restore_labels_from_output_folders(self):
+        output_dir = self.get_output_base_dir()
+        if not output_dir.exists():
+            return 0, []
+
+        origin_files = {image.name: image for image in self.get_image_files()}
+        if not origin_files:
+            return 0, []
+
+        folder_to_category = {}
+        for category_name, category_dir in self.get_export_category_dirs(output_dir).items():
+            folder_to_category[category_dir.name] = category_name
+
+        existing_names = {category.name for category in self.categories}
+        added_categories = []
+        restored_labels = {}
+
+        category_folders = [
+            entry
+            for entry in os.scandir(output_dir)
+            if entry.is_dir()
+        ]
+        category_folders.sort(key=lambda entry: entry.name.lower())
+
+        for entry in category_folders:
+            category_name = folder_to_category.get(
+                entry.name,
+                self.resolve_category_name(entry.name),
+            )
+            if not category_name or self.is_reserved_category(category_name):
+                continue
+
+            if category_name not in existing_names:
+                color = DEFAULT_CATEGORY_COLORS[
+                    len(existing_names) % len(DEFAULT_CATEGORY_COLORS)
+                ][1]
+                self.categories.append(
+                    Category(
+                        name=category_name,
+                        display_name=category_name,
+                        color=color,
+                        shortcut_key="",
+                    )
+                )
+                existing_names.add(category_name)
+                added_categories.append(category_name)
+
+            for image_file in sorted(Path(entry.path).iterdir(), key=lambda path: path.name.lower()):
+                if not image_file.is_file():
+                    continue
+                if not image_file.name.lower().endswith(IMAGE_EXTENSIONS):
+                    continue
+                origin_file = origin_files.get(image_file.name)
+                if not origin_file:
+                    continue
+                rel_path = str(origin_file.relative_to(self.origin_dir))
+                restored_labels[rel_path] = category_name
+
+        self.labeled_images.update(restored_labels)
+        self.ensure_invalid_category()
+        self.rebuild_category_counts()
+        self.save_config()
+        return len(restored_labels), added_categories
 
     def get_image_label(self, image_path):
         rel_path = str(Path(image_path).relative_to(self.origin_dir))
@@ -1028,6 +1113,7 @@ class FullscreenLabelWindow(QWidget):
         self.label_interface = label_interface
         self.shortcutKeys = {}
         self.categoryButtons = {}
+        self.categoryCountLabels = {}
         self.thumbnailItems = []
         self.filtered_indices = []
         self._thumbCache = {}
@@ -1475,6 +1561,7 @@ class FullscreenLabelWindow(QWidget):
             count_color = "#8f8f8f" if isDarkTheme() else "#7a7a7a"
             countLabel.setStyleSheet(f"QLabel {{ color: {count_color}; font-size: 10px; }}")
             metaRow.addWidget(countLabel)
+            self.categoryCountLabels[category.name] = countLabel
             rowLayout.addLayout(metaRow)
 
             self.categoryListLayout.addWidget(row)
@@ -1495,6 +1582,17 @@ class FullscreenLabelWindow(QWidget):
         self.categoryListLayout.addStretch()
         self.refreshImageList(force_rebuild=True)
         self.refreshView(refresh_image_list=False)
+
+    def updateCategoryCounts(self, category_names=None):
+        interface = self.label_interface
+        if not interface or not interface.project:
+            return
+
+        names = category_names or list(self.categoryCountLabels.keys())
+        for name in names:
+            label = self.categoryCountLabels.get(name)
+            if label:
+                label.setText(f"已标记: {interface.project.get_category_count(name)}")
 
     def refreshImageList(self, force_rebuild=False):
         interface = self.label_interface
@@ -1613,7 +1711,6 @@ class FullscreenLabelWindow(QWidget):
 
     def applyCategory(self, category_name):
         self.label_interface.labelCurrentImage(category_name)
-        self.refreshView()
 
     def onPrevClicked(self):
         # Keep button behavior on full list.
@@ -1698,6 +1795,7 @@ class FullscreenLabelWindow(QWidget):
     def closeEvent(self, event):
         self.clearShortcuts()
         if self.label_interface:
+            self.label_interface.flushProjectSave()
             self.label_interface.fullscreenLabelWindow = None
         super().closeEvent(event)
 
@@ -1721,6 +1819,9 @@ class ImageLabelInterface(GalleryInterface):
         self.fullscreenLabelWindow = None
         self.categoryCards = {}
         self.presetStore = CategoryPresetStore()
+        self.projectSaveTimer = QTimer(self)
+        self.projectSaveTimer.setSingleShot(True)
+        self.projectSaveTimer.timeout.connect(self.flushProjectSave)
 
         self.initUI()
         self.bindContentCards()
@@ -1790,6 +1891,10 @@ class ImageLabelInterface(GalleryInterface):
         self.selectFolderButton = PushButton("选择项目文件夹", self, FIF.FOLDER)
         self.selectFolderButton.clicked.connect(self.selectProjectFolder)
         buttonLayout.addWidget(self.selectFolderButton)
+
+        self.openProjectFolderButton = PushButton("打开项目文件夹", self, FIF.FOLDER)
+        self.openProjectFolderButton.clicked.connect(self.openProjectFolder)
+        buttonLayout.addWidget(self.openProjectFolderButton)
 
         self.pasteFolderButton = PushButton("粘贴", self, FIF.PASTE)
         self.pasteFolderButton.clicked.connect(self.pasteFolderFromClipboard)
@@ -1920,10 +2025,18 @@ class ImageLabelInterface(GalleryInterface):
         self.exportButton = PushButton("导出已标记图片", self, FIF.SAVE)
         self.exportButton.clicked.connect(self.exportImages)
 
+        self.restoreConfigButton = PushButton("从文件夹恢复JSON", self, FIF.ROTATE)
+        self.restoreConfigButton.clicked.connect(self.restoreLabelsFromFolders)
+
+        self.openJsonButton = PushButton("打开JSON文件", self, FIF.DOCUMENT)
+        self.openJsonButton.clicked.connect(self.openJsonFile)
+
         self.openOutputButton = PushButton("打开输出文件夹", self, FIF.FOLDER)
         self.openOutputButton.clicked.connect(self.openOutputFolder)
 
         topLayout.addWidget(self.exportButton)
+        topLayout.addWidget(self.restoreConfigButton)
+        topLayout.addWidget(self.openJsonButton)
         topLayout.addWidget(self.openOutputButton)
         topLayout.addStretch()
         layout.addLayout(topLayout)
@@ -1995,6 +2108,27 @@ class ImageLabelInterface(GalleryInterface):
         folderPath = QFileDialog.getExistingDirectory(self, "选择项目文件夹", startDir)
         if folderPath:
             self.loadProjectFolder(folderPath)
+
+    def openPathInFileManager(self, path):
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.run(["open", str(path)])
+            else:
+                import subprocess
+                subprocess.run(["xdg-open", str(path)])
+        except Exception as e:
+            InfoBar.error("错误", f"无法打开: {str(e)}", duration=3000, parent=self)
+
+    def openProjectFolder(self):
+        if not self.project:
+            InfoBar.warning("警告", "请先选择项目文件夹", duration=2000, parent=self)
+            return
+
+        self.project.project_dir.mkdir(parents=True, exist_ok=True)
+        self.openPathInFileManager(self.project.project_dir)
 
     def refreshWorkDirectoryProjects(self):
         """Refresh quick project list from configured work directory."""
@@ -2090,6 +2224,7 @@ class ImageLabelInterface(GalleryInterface):
         self.loadProjectFolder(str(path))
 
     def loadProjectFolder(self, folderPath):
+        self.flushProjectSave()
         projectPath = Path(folderPath)
         if projectPath.name == "origin_pic":
             projectPath = projectPath.parent
@@ -2097,6 +2232,7 @@ class ImageLabelInterface(GalleryInterface):
 
         self.folderPathLabel.setText(folderPath)
         self.selectFolderButton.setEnabled(False)
+        self.openProjectFolderButton.setEnabled(False)
         self.pasteFolderButton.setEnabled(False)
         QTimer.singleShot(0, lambda p=folderPath: self._loadProjectFolderInternal(p))
 
@@ -2125,6 +2261,7 @@ class ImageLabelInterface(GalleryInterface):
             InfoBar.error("错误", f"加载文件夹失败: {str(e)}", duration=3000, parent=self)
         finally:
             self.selectFolderButton.setEnabled(True)
+            self.openProjectFolderButton.setEnabled(True)
             self.pasteFolderButton.setEnabled(True)
 
     def updateCategoryList(self):
@@ -2176,6 +2313,27 @@ class ImageLabelInterface(GalleryInterface):
         for card in self.categoryCards.values():
             card.updateLabelColors(display_mode=True)
             card.updateColorIndicator()
+
+    def scheduleProjectSave(self):
+        self.projectSaveTimer.start(300)
+
+    def flushProjectSave(self):
+        if self.project and self.projectSaveTimer.isActive():
+            self.projectSaveTimer.stop()
+            self.project.save_config()
+
+    def updateCategoryCounts(self, category_names=None):
+        if not self.project:
+            return
+
+        names = category_names or list(self.categoryCards.keys())
+        for name in names:
+            card = self.categoryCards.get(name)
+            if card:
+                card.updateCount(self.project.get_category_count(name))
+
+        if self.fullscreenLabelWindow and self.fullscreenLabelWindow.isVisible():
+            self.fullscreenLabelWindow.updateCategoryCounts(names)
 
     def updateExportInfo(self):
         total = len(self.image_files)
@@ -2385,19 +2543,57 @@ class ImageLabelInterface(GalleryInterface):
 
         img_file = self.image_files[self.current_index]
         labeled_index = self.current_index
-        if not self.project.label_image(img_file, category_name):
+        old_label = self.project.get_image_label(img_file)
+        self.project.current_image_index = labeled_index
+        if not self.project.label_image(img_file, category_name, save=True):
             return
 
-        self.updateCategoryList()
+        new_label = self.project.resolve_category_name(category_name)
+        changed_categories = {new_label}
+        if old_label:
+            changed_categories.add(old_label)
+        self.updateCategoryCounts(changed_categories)
 
         display_name = self.project.get_category_display_name(category_name)
-        InfoBar.success("成功", f"已标记为: {display_name}", duration=1000, parent=self)
+        if not (self.fullscreenLabelWindow and self.fullscreenLabelWindow.isVisible()):
+            InfoBar.success("成功", f"已标记为: {display_name}", duration=1000, parent=self)
 
         if labeled_index < len(self.image_files) - 1:
             self.current_index = labeled_index + 1
         self.loadCurrentImage()
 
+    def restoreLabelsFromFolders(self):
+        if not self.project:
+            InfoBar.warning("警告", "请先选择图片文件夹", duration=2000, parent=self)
+            return
+
+        output_dir = self.project.get_output_base_dir()
+        if not output_dir.exists():
+            InfoBar.warning("警告", f"未找到分类文件夹: {output_dir}", duration=3000, parent=self)
+            return
+
+        confirm = MessageBox(
+            "从文件夹恢复JSON",
+            f"将扫描 {output_dir} 下的分类文件夹，并写入 label_config.json。是否继续？",
+            self.window(),
+        )
+        if not confirm.exec():
+            return
+
+        try:
+            restored_count, added_categories = self.project.restore_labels_from_output_folders()
+            self.updateCategoryList()
+            self.loadCurrentImage()
+
+            detail = f"已恢复 {restored_count} 条标记到 label_config.json"
+            if added_categories:
+                detail += f"，新增分类: {', '.join(added_categories)}"
+            InfoBar.success("成功", detail, duration=3500, parent=self)
+        except Exception as e:
+            InfoBar.error("错误", f"恢复失败: {str(e)}", duration=3000, parent=self)
+
     def exportImages(self):
+        self.flushProjectSave()
         if not self.project:
             InfoBar.warning("警告", "请先选择图片文件夹", duration=2000, parent=self)
             return
@@ -2417,6 +2613,17 @@ class ImageLabelInterface(GalleryInterface):
             )
         except Exception as e:
             InfoBar.error("错误", f"导出失败: {str(e)}", duration=3000, parent=self)
+
+    def openJsonFile(self):
+        if not self.project:
+            InfoBar.warning("警告", "请先选择项目文件夹", duration=2000, parent=self)
+            return
+
+        self.flushProjectSave()
+        config_path = self.project.get_config_path()
+        if not config_path.exists():
+            self.project.save_config()
+        self.openPathInFileManager(config_path)
 
     def openOutputFolder(self):
         if not self.project:

@@ -24,6 +24,8 @@ from ..common.config import cfg
 from ..common.signal_bus import signalBus
 from pathlib import Path
 
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
+
 
 class VideoInfoWidget(CardWidget):
     """ 视频信息显示组件 """
@@ -305,6 +307,23 @@ class VideoFrameInterface(GalleryInterface):
         self.selectFileButton = PushButton("选择视频文件", self, FIF.VIDEO)
         self.selectFileButton.clicked.connect(self.selectVideoFile)
         layout.addWidget(self.selectFileButton)
+
+        projectButtonLayout = QHBoxLayout()
+        projectButtonLayout.setSpacing(15)
+
+        self.selectWorkDirectoryButton = PushButton("选择工作目录", self, FIF.FOLDER)
+        self.selectWorkDirectoryButton.clicked.connect(self.selectVideoWorkDirectory)
+        projectButtonLayout.addWidget(self.selectWorkDirectoryButton)
+
+        self.openWorkDirectoryButton = PushButton("打开工作目录", self, FIF.FOLDER)
+        self.openWorkDirectoryButton.clicked.connect(self.openVideoWorkDirectory)
+        projectButtonLayout.addWidget(self.openWorkDirectoryButton)
+
+        self.pasteWorkDirectoryButton = PushButton("粘贴", self, FIF.PASTE)
+        self.pasteWorkDirectoryButton.clicked.connect(self.pasteVideoWorkDirectoryFromClipboard)
+        projectButtonLayout.addWidget(self.pasteWorkDirectoryButton)
+        projectButtonLayout.addStretch()
+        layout.addLayout(projectButtonLayout)
 
         quickLayout = QHBoxLayout()
         quickLayout.setSpacing(10)
@@ -593,6 +612,66 @@ class VideoFrameInterface(GalleryInterface):
         if filePath:
             self.loadVideoFile(filePath)
 
+    def selectVideoWorkDirectory(self):
+        startDir = self.resolveDialogDirectory(
+            cfg.get(cfg.workDirectory),
+            self.outputDirEdit.text(),
+            Path(self.videoPath).parent if self.videoPath else None,
+        )
+        folderPath = QFileDialog.getExistingDirectory(self, "选择工作目录", startDir)
+        if folderPath:
+            self.setVideoWorkDirectory(folderPath)
+
+    def pasteVideoWorkDirectoryFromClipboard(self):
+        from PyQt5.QtWidgets import QApplication
+
+        clipboardText = QApplication.clipboard().text().strip()
+        if not clipboardText:
+            InfoBar.warning("警告", "剪贴板为空", duration=2000, parent=self)
+            return
+
+        path = Path(clipboardText)
+        if not path.exists():
+            InfoBar.error("错误", f"路径不存在: {clipboardText}", duration=3000, parent=self)
+            return
+
+        if not path.is_dir():
+            InfoBar.error("错误", f"路径不是工作目录: {clipboardText}", duration=3000, parent=self)
+            return
+
+        self.setVideoWorkDirectory(str(path))
+
+    def setVideoWorkDirectory(self, folderPath):
+        folderPath = str(Path(folderPath))
+        if cfg.get(cfg.workDirectory) == folderPath:
+            self.refreshWorkDirectoryVideos()
+            return
+
+        cfg.set(cfg.workDirectory, folderPath)
+        signalBus.workDirectoryChanged.emit(folderPath)
+        self.refreshWorkDirectoryVideos()
+        InfoBar.success("成功", f"工作目录已设置为: {folderPath}", duration=2000, parent=self)
+
+    def openPathInFileManager(self, path):
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(path)])
+            else:
+                subprocess.run(["xdg-open", str(path)])
+        except Exception as e:
+            InfoBar.error("错误", f"无法打开: {str(e)}", duration=3000, parent=self)
+
+    def openVideoWorkDirectory(self):
+        workDir = cfg.get(cfg.workDirectory)
+        if not workDir:
+            InfoBar.warning("警告", "请先选择工作目录", duration=2000, parent=self)
+            return
+
+        Path(workDir).mkdir(parents=True, exist_ok=True)
+        self.openPathInFileManager(workDir)
+
     def refreshWorkDirectoryVideos(self):
         """Refresh quick video list from configured work directory."""
         if not hasattr(self, "quickVideoComboBox"):
@@ -607,10 +686,9 @@ class VideoFrameInterface(GalleryInterface):
             self.loadQuickVideoButton.setEnabled(False)
             return
 
-        video_extensions = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
         videos = []
         for path in Path(workDir).iterdir():
-            if path.is_file() and path.suffix.lower() in video_extensions:
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
                 videos.append(path)
 
         videos.sort(key=self.getPathModifiedTime, reverse=True)

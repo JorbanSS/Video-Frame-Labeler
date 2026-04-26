@@ -131,6 +131,8 @@ class MainWindow(FluentWindow):
             self.splashScreen.resize(self.size())
 
     def closeEvent(self, e):
+        if hasattr(self, 'imageLabelInterface'):
+            self.imageLabelInterface.flushProjectSave()
         self.themeListener.terminate()
         self.themeListener.deleteLater()
         super().closeEvent(e)
