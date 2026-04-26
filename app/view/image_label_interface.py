@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QSize, QStandardPaths, QTimer
-from PyQt5.QtGui import QKeySequence, QPixmap, QKeyEvent
+from PyQt5.QtGui import QKeySequence, QPixmap, QKeyEvent, QIcon
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -35,7 +35,9 @@ from qfluentwidgets import (
     MessageBoxBase,
     ToolButton,
     SubtitleLabel,
+    FluentTitleBar,
 )
+from qframelesswindow import FramelessWindow
 
 from .gallery_interface import GalleryInterface
 from ..common.config import cfg
@@ -831,6 +833,8 @@ class ImageDisplayWidget(QWidget):
         )
         self.imageLabel.setScaledContents(False)
         self.imageLabel.setWordWrap(True)
+        self.imageLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.imageLabel.setMinimumSize(320, 240)
 
         layout.addWidget(self.imageLabel)
 
@@ -1105,17 +1109,22 @@ class ThumbnailListItem(QFrame):
             self.parent_window.selectImageIndex(self.image_index)
 
 
-class FullscreenLabelWindow(QWidget):
+class FullscreenLabelWindow(FramelessWindow):
     """Full-screen labeling window with filtered thumbnail list."""
 
     def __init__(self, label_interface):
         super().__init__(None)
         self.label_interface = label_interface
+        self._resizeRefreshPending = False
         self.shortcutKeys = {}
         self.categoryButtons = {}
         self.categoryCountLabels = {}
         self.thumbnailItems = []
+        self.thumbnailPositions = []
         self.filtered_indices = []
+        self._thumbnailBuildToken = 0
+        self._thumbnailBuildNext = 0
+        self._thumbnailBuildBatchSize = 180
         self._thumbCache = {}
         self._sourcePixmapCache = {}
         self._sourcePixmapOrder = []
@@ -1125,18 +1134,21 @@ class FullscreenLabelWindow(QWidget):
         self._thumbnailThemeDirty = True
         self.setObjectName("fullscreenLabelWindow")
         self.setWindowTitle("图片标记")
-        self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+        self.setWindowIcon(QIcon(":/gallery/images/logo.png"))
+        self.setTitleBar(FluentTitleBar(self))
+        self.setWindowTitle("图片标记")
+        self.titleBar.setTitle("图片标记")
+        self.setMinimumSize(900, 640)
         self.initUI()
 
     def initUI(self):
         mainLayout = QVBoxLayout(self)
-        mainLayout.setContentsMargins(16, 16, 16, 16)
+        mainLayout.setContentsMargins(16, 56, 16, 16)
         mainLayout.setSpacing(12)
 
         topLayout = QHBoxLayout()
         topLayout.setSpacing(10)
 
-        self.titleLabel = StrongBodyLabel("图片标记", self)
         self.indexLabel = BodyLabel("0 / 0", self)
 
         self.filterLabel = BodyLabel("列表筛选", self)
@@ -1149,8 +1161,6 @@ class FullscreenLabelWindow(QWidget):
         self.nextButton = PushButton("下一张", self, FIF.RIGHT_ARROW)
         self.nextButton.clicked.connect(self.onNextClicked)
 
-        topLayout.addWidget(self.titleLabel)
-        topLayout.addSpacing(10)
         topLayout.addWidget(self.filterLabel)
         topLayout.addWidget(self.filterCombo)
         topLayout.addStretch()
@@ -1357,7 +1367,6 @@ class FullscreenLabelWindow(QWidget):
             """
         )
 
-        self.titleLabel.setStyleSheet(f"QLabel {{ color: {text_color}; font-size: 18px; font-weight: bold; }}")
         self.indexLabel.setStyleSheet(f"QLabel {{ color: {sub_text}; font-size: 14px; }}")
         self.filterLabel.setStyleSheet(f"QLabel {{ color: {sub_text}; font-size: 13px; }}")
         self.setCurrentLabelText("当前标记: 无", None, label_bg)
@@ -1594,62 +1603,102 @@ class FullscreenLabelWindow(QWidget):
             if label:
                 label.setText(f"已标记: {interface.project.get_category_count(name)}")
 
+    def _visibleThumbnailPositions(self, filtered_indices, active_pos=None):
+        return list(range(len(filtered_indices)))
+
+    def _clearThumbnailList(self):
+        while self.thumbnailListLayout.count():
+            item = self.thumbnailListLayout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.thumbnailItems = []
+        self.thumbnailPositions = []
+
+    def _removeTrailingThumbnailStretch(self):
+        count = self.thumbnailListLayout.count()
+        if count <= 0:
+            return
+        last_item = self.thumbnailListLayout.itemAt(count - 1)
+        if last_item and last_item.widget() is None:
+            self.thumbnailListLayout.takeAt(count - 1)
+
+    def _startThumbnailRebuild(self, filtered_indices):
+        self._thumbnailBuildToken += 1
+        token = self._thumbnailBuildToken
+        self.filtered_indices = filtered_indices
+        self._thumbnailBuildNext = 0
+        self._clearThumbnailList()
+        self._appendThumbnailBatch(token)
+
+    def _appendThumbnailBatch(self, token):
+        if token != self._thumbnailBuildToken:
+            return
+
+        interface = self.label_interface
+        if not interface:
+            return
+
+        images = interface.image_files
+        self._removeTrailingThumbnailStretch()
+
+        start = self._thumbnailBuildNext
+        end = min(len(self.filtered_indices), start + self._thumbnailBuildBatchSize)
+        for pos in range(start, end):
+            original_index = self.filtered_indices[pos]
+            item = ThumbnailListItem(original_index, images[original_index], self)
+            self.thumbnailListLayout.addWidget(item)
+            self.thumbnailItems.append(item)
+            self.thumbnailPositions.append(pos)
+
+        self._thumbnailBuildNext = end
+        self.thumbnailListLayout.addStretch()
+
+        self.refreshImageList(force_rebuild=False)
+        if self._thumbnailBuildNext < len(self.filtered_indices):
+            QTimer.singleShot(0, lambda t=token: self._appendThumbnailBatch(t))
+
     def refreshImageList(self, force_rebuild=False):
         interface = self.label_interface
         images = interface.image_files if interface else []
         filtered_indices = self._computeFilteredIndices()
+        active_pos = self._currentFilteredPosition()
 
-        should_rebuild = (
-            force_rebuild
-            or filtered_indices != self.filtered_indices
-            or len(self.thumbnailItems) != len(filtered_indices)
-        )
+        if filtered_indices != self.filtered_indices:
+            active_pos = -1
+            if interface and interface.current_index in filtered_indices:
+                active_pos = filtered_indices.index(interface.current_index)
+
+        should_rebuild = force_rebuild or filtered_indices != self.filtered_indices
 
         if should_rebuild:
-            self.filtered_indices = filtered_indices
-            self.thumbnailItems = []
-            while self.thumbnailListLayout.count():
-                item = self.thumbnailListLayout.takeAt(0)
-                widget = item.widget()
-                if widget:
-                    widget.deleteLater()
-
-            for original_index in self.filtered_indices:
-                item = ThumbnailListItem(original_index, images[original_index], self)
-                self.thumbnailListLayout.addWidget(item)
-                self.thumbnailItems.append(item)
-
-            self.thumbnailListLayout.addStretch()
+            self._startThumbnailRebuild(filtered_indices)
             self._lastActiveThumbnailPosition = -1
 
         total = len(self.thumbnailItems)
         if total == 0:
             return
 
-        active_pos = self._currentFilteredPosition()
         update_positions = set()
 
         if force_rebuild or should_rebuild:
-            if 0 <= active_pos < total:
-                start = max(0, active_pos - 24)
-                end = min(total - 1, active_pos + 24)
-                update_positions.update(range(start, end + 1))
-            else:
-                update_positions.update(range(min(total, 30)))
+            update_positions.update(range(total))
         else:
-            if 0 <= self._lastActiveThumbnailPosition < total:
-                update_positions.add(self._lastActiveThumbnailPosition)
-            if 0 <= active_pos < total:
-                update_positions.add(active_pos)
-                update_positions.update(range(max(0, active_pos - 4), min(total, active_pos + 5)))
+            if self._lastActiveThumbnailPosition in self.thumbnailPositions:
+                update_positions.add(self.thumbnailPositions.index(self._lastActiveThumbnailPosition))
+            if active_pos in self.thumbnailPositions:
+                active_item_pos = self.thumbnailPositions.index(active_pos)
+                update_positions.add(active_item_pos)
+                update_positions.update(range(max(0, active_item_pos - 4), min(total, active_item_pos + 5)))
 
         if self._thumbnailThemeDirty:
             update_positions.update(range(total))
 
         project = interface.project
-        for pos in sorted(update_positions):
-            original_index = self.filtered_indices[pos]
-            item = self.thumbnailItems[pos]
+        for item_pos in sorted(update_positions):
+            filtered_pos = self.thumbnailPositions[item_pos]
+            original_index = self.filtered_indices[filtered_pos]
+            item = self.thumbnailItems[item_pos]
             label_name = project.get_image_label(images[original_index]) if project else None
             label_text = project.get_category_display_name(label_name) if project and label_name else None
 
@@ -1659,13 +1708,17 @@ class FullscreenLabelWindow(QWidget):
                 if category and category.color:
                     border_color = category.color
 
-            load_thumb = (0 <= active_pos < total and abs(pos - active_pos) <= 24) or force_rebuild
+            load_thumb = active_pos >= 0 and abs(filtered_pos - active_pos) <= 24
             if load_thumb:
                 item.ensureThumbnailLoaded(self._thumbCache)
-            item.updateState(active=(pos == active_pos), border_color=border_color, label_text=label_text)
+            item.updateState(active=(filtered_pos == active_pos), border_color=border_color, label_text=label_text)
 
-        if 0 <= active_pos < len(self.thumbnailItems):
-            self.thumbnailScroll.ensureWidgetVisible(self.thumbnailItems[active_pos], 12, 12)
+        if active_pos in self.thumbnailPositions:
+            self.thumbnailScroll.ensureWidgetVisible(
+                self.thumbnailItems[self.thumbnailPositions.index(active_pos)],
+                12,
+                12,
+            )
 
         self._lastActiveThumbnailPosition = active_pos
         self._thumbnailThemeDirty = False
@@ -1776,7 +1829,15 @@ class FullscreenLabelWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.refreshView()
+        if self._resizeRefreshPending:
+            return
+        self._resizeRefreshPending = True
+        QTimer.singleShot(0, self.refreshAfterResize)
+
+    def refreshAfterResize(self):
+        self._resizeRefreshPending = False
+        if self.isVisible():
+            self.refreshView(refresh_image_list=False)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -2080,6 +2141,11 @@ class ImageLabelInterface(GalleryInterface):
 
         self.fullscreenLabelWindow = FullscreenLabelWindow(self)
         self.fullscreenLabelWindow.showMaximized()
+        QTimer.singleShot(30, self.initializeFullscreenLabelWindow)
+
+    def initializeFullscreenLabelWindow(self):
+        if not self.fullscreenLabelWindow or not self.fullscreenLabelWindow.isVisible():
+            return
         self.fullscreenLabelWindow.refreshCategories()
         self.fullscreenLabelWindow.refreshView()
 
