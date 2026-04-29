@@ -1448,13 +1448,13 @@ class FullscreenLabelWindow(FramelessWindow):
 
         self.filterCombo.blockSignals(True)
         self.filterCombo.clear()
-        self.filterCombo.addItem("全部", FILTER_ALL)
-        self.filterCombo.addItem("未标记", FILTER_UNLABELED)
+        self.filterCombo.addItem("全部", userData=FILTER_ALL)
+        self.filterCombo.addItem("未标记", userData=FILTER_UNLABELED)
 
         interface = self.label_interface
         if interface and interface.project:
             for category in interface.project.categories:
-                self.filterCombo.addItem(category.display_name, category.name)
+                self.filterCombo.addItem(category.display_name, userData=category.name)
 
         target_index = 0
         for i in range(self.filterCombo.count()):
@@ -1763,7 +1763,27 @@ class FullscreenLabelWindow(FramelessWindow):
             self.navigateFiltered(-1)
 
     def applyCategory(self, category_name):
-        self.label_interface.labelCurrentImage(category_name)
+        interface = self.label_interface
+        if not interface:
+            return
+
+        selected_filter = self.filterCombo.currentData()
+        advance_to_index = None
+        auto_advance = selected_filter in (None, FILTER_ALL)
+
+        if not auto_advance:
+            filtered = list(self.filtered_indices) if self.filtered_indices else self._computeFilteredIndices()
+            current_index = interface.current_index
+            if current_index in filtered:
+                current_pos = filtered.index(current_index)
+                if current_pos + 1 < len(filtered):
+                    advance_to_index = filtered[current_pos + 1]
+
+        interface.labelCurrentImage(
+            category_name,
+            advance_to_index=advance_to_index,
+            auto_advance=auto_advance,
+        )
 
     def onPrevClicked(self):
         # Keep button behavior on full list.
@@ -2603,16 +2623,16 @@ class ImageLabelInterface(GalleryInterface):
             self.current_index += 1
             self.loadCurrentImage()
 
-    def labelCurrentImage(self, category_name):
+    def labelCurrentImage(self, category_name, advance_to_index=None, auto_advance=True):
         if not self.project or self.current_index < 0 or self.current_index >= len(self.image_files):
-            return
+            return False
 
         img_file = self.image_files[self.current_index]
         labeled_index = self.current_index
         old_label = self.project.get_image_label(img_file)
         self.project.current_image_index = labeled_index
         if not self.project.label_image(img_file, category_name, save=True):
-            return
+            return False
 
         new_label = self.project.resolve_category_name(category_name)
         changed_categories = {new_label}
@@ -2624,9 +2644,12 @@ class ImageLabelInterface(GalleryInterface):
         if not (self.fullscreenLabelWindow and self.fullscreenLabelWindow.isVisible()):
             InfoBar.success("成功", f"已标记为: {display_name}", duration=1000, parent=self)
 
-        if labeled_index < len(self.image_files) - 1:
+        if advance_to_index is not None and 0 <= advance_to_index < len(self.image_files):
+            self.current_index = advance_to_index
+        elif auto_advance and labeled_index < len(self.image_files) - 1:
             self.current_index = labeled_index + 1
         self.loadCurrentImage()
+        return True
 
     def restoreLabelsFromFolders(self):
         if not self.project:

@@ -2,6 +2,126 @@
   "version": 1,
   "records": [
     {
+      "time": "2026-04-29 16:10:12",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 4921,
+      "categories": {
+        "closeup_celebration": 166,
+        "dinking": 461,
+        "drive_smash": 280,
+        "idle_walking": 1436,
+        "serve": 760,
+        "无效类": 1818
+      },
+      "projects": 10
+    },
+    {
+      "time": "2026-04-29 12:57:28",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 4921,
+      "categories": {
+        "closeup_celebration": 214,
+        "dinking": 492,
+        "drive_smash": 362,
+        "idle_walking": 1449,
+        "serve": 762,
+        "无效类": 1642
+      },
+      "projects": 10
+    },
+    {
+      "time": "2026-04-29 12:09:11",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 4921,
+      "categories": {
+        "closeup_celebration": 214,
+        "dinking": 492,
+        "drive_smash": 362,
+        "idle_walking": 1449,
+        "serve": 762,
+        "无效类": 1642
+      },
+      "projects": 10
+    },
+    {
+      "time": "2026-04-28 14:38:17",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 4921,
+      "categories": {
+        "closeup_celebration": 203,
+        "dinking": 488,
+        "drive_smash": 315,
+        "idle_walking": 1457,
+        "serve": 759,
+        "无效类": 1699
+      },
+      "projects": 10
+    },
+    {
+      "time": "2026-04-28 00:56:14",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 4308,
+      "categories": {
+        "closeup_celebration": 175,
+        "dinking": 496,
+        "drive_smash": 204,
+        "idle_walking": 1457,
+        "serve": 712,
+        "无效类": 1264
+      },
+      "projects": 10
+    },
+    {
+      "time": "2026-04-27 00:29:54",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 3120,
+      "categories": {
+        "closeup_celebration": 142,
+        "dinking": 373,
+        "drive_smash": 131,
+        "idle_walking": 1153,
+        "serve": 585,
+        "无效类": 736
+      },
+      "projects": 8
+    },
+    {
+      "time": "2026-04-26 22:58:16",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\classified",
+      "total_files": 3120,
+      "categories": {
+        "closeup_celebration": 142,
+        "dinking": 373,
+        "drive_smash": 131,
+        "idle_walking": 1153,
+        "serve": 585,
+        "无效类": 736
+      },
+      "projects": 8
+    },
+    {
+      "time": "2026-04-26 21:29:07",
+      "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
+      "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\augmented",
+      "total_files": 3120,
+      "categories": {
+        "closeup_celebration": 142,
+        "dinking": 373,
+        "drive_smash": 131,
+        "idle_walking": 1153,
+        "serve": 585,
+        "无效类": 736
+      },
+      "projects": 8
+    },
+    {
       "time": "2026-04-25 17:44:50",
       "work_dir": "E:/GraduationProject/Pickleball-Action-Recognition/data/raw",
       "output_dir": "E:\\GraduationProject\\Pickleball-Action-Recognition\\data\\augmented",
