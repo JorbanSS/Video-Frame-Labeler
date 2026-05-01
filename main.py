@@ -2,6 +2,13 @@
 import os
 import sys
 
+try:
+    # Load CUDA torch DLLs before Qt initializes its platform/media stack.
+    # On Windows, importing GPU torch after QApplication can fail with c10.dll WinError 1114.
+    import torch  # noqa: F401
+except Exception:
+    pass
+
 from PyQt5.QtCore import Qt, QTranslator
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication

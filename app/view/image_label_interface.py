@@ -4,10 +4,11 @@ import sys
 import json
 import shutil
 import re
+import ctypes
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QSize, QStandardPaths, QTimer
-from PyQt5.QtGui import QKeySequence, QPixmap, QKeyEvent, QIcon
+from PyQt5.QtGui import QKeySequence, QPixmap, QKeyEvent, QIcon, QPainter, QPen, QColor
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -18,6 +19,9 @@ from PyQt5.QtWidgets import (
     QFrame,
     QSizePolicy,
     QScrollArea,
+    QProgressBar,
+    QDialog,
+    QApplication,
 )
 from qfluentwidgets import (
     PushButton,
@@ -44,7 +48,8 @@ from ..common.config import cfg
 from ..common.signal_bus import signalBus
 
 
-INVALID_CATEGORY_NAME = "无效类"
+INVALID_CATEGORY_NAME = "invalid"
+INVALID_CATEGORY_DISPLAY_NAME = "无效类"
 INVALID_CATEGORY_COLOR = "#000000"
 INVALID_CATEGORY_SHORTCUT = "Space"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff")
@@ -115,12 +120,13 @@ class CategoryPresetStore:
                 continue
 
             categories = []
-            seen_names = set()
+            seen_names = {INVALID_CATEGORY_DISPLAY_NAME}
             for category_data in item.get("categories", []):
                 category = Category.from_dict(category_data)
                 if (
                     not category.name
                     or category.name == INVALID_CATEGORY_NAME
+                    or category.name == INVALID_CATEGORY_DISPLAY_NAME
                     or category.name in seen_names
                 ):
                     continue
@@ -174,7 +180,7 @@ class CategoryPresetStore:
             return False
 
         result_categories = []
-        used_names = set()
+        used_names = {INVALID_CATEGORY_DISPLAY_NAME}
         for category in categories:
             if isinstance(category, dict):
                 category = Category.from_dict(category)
@@ -182,7 +188,7 @@ class CategoryPresetStore:
                 continue
 
             name = category.name.strip()
-            if not name or name == INVALID_CATEGORY_NAME or name in used_names:
+            if not name or name == INVALID_CATEGORY_NAME or name == INVALID_CATEGORY_DISPLAY_NAME or name in used_names:
                 continue
             used_names.add(name)
             result_categories.append(
@@ -246,7 +252,8 @@ class LabelProject:
 
     @staticmethod
     def is_reserved_category(name):
-        return str(name or "").strip() == INVALID_CATEGORY_NAME
+        normalized = str(name or "").strip()
+        return normalized == INVALID_CATEGORY_NAME or normalized == INVALID_CATEGORY_DISPLAY_NAME
 
     def _categories_signature(self):
         return [c.to_dict() for c in self.categories]
@@ -255,7 +262,7 @@ class LabelProject:
         """Ensure reserved category exists and immutable as first item."""
         before = self._categories_signature()
         cleaned = []
-        used_names = {INVALID_CATEGORY_NAME}
+        used_names = {INVALID_CATEGORY_NAME, INVALID_CATEGORY_DISPLAY_NAME}
 
         for category in self.categories:
             if not isinstance(category, Category):
@@ -282,7 +289,7 @@ class LabelProject:
         self.categories = [
             Category(
                 name=INVALID_CATEGORY_NAME,
-                display_name=INVALID_CATEGORY_NAME,
+                display_name=INVALID_CATEGORY_DISPLAY_NAME,
                 color=INVALID_CATEGORY_COLOR,
                 shortcut_key=INVALID_CATEGORY_SHORTCUT,
             )
@@ -474,16 +481,38 @@ class LabelProject:
         self.save_config()
         return True
 
+    def merge_category(self, source_name, target_name):
+        source = self.resolve_category_name(source_name)
+        target = self.resolve_category_name(target_name)
+        if not source or not target:
+            return False, "分类不存在"
+        if source == target:
+            return False, "不能合并到自身"
+        if self.is_reserved_category(source) or self.is_reserved_category(target):
+            return False, "系统保留分类不可操作"
+        if not self.get_category(target):
+            return False, "目标分类不存在"
+
+        self.labeled_images = {
+            k: (target if v == source else v)
+            for k, v in self.labeled_images.items()
+        }
+        self.categories = [c for c in self.categories if c.name != source]
+        self.ensure_invalid_category()
+        self.rebuild_category_counts()
+        self.save_config()
+        return True, ""
+
     def replace_categories_from_preset(self, categories):
         new_categories = [
             Category(
                 name=INVALID_CATEGORY_NAME,
-                display_name=INVALID_CATEGORY_NAME,
+                display_name=INVALID_CATEGORY_DISPLAY_NAME,
                 color=INVALID_CATEGORY_COLOR,
                 shortcut_key=INVALID_CATEGORY_SHORTCUT,
             )
         ]
-        used_names = {INVALID_CATEGORY_NAME}
+        used_names = {INVALID_CATEGORY_NAME, INVALID_CATEGORY_DISPLAY_NAME}
 
         for category in categories:
             if isinstance(category, dict):
@@ -785,6 +814,19 @@ class CategoryEditDialog(MessageBoxBase):
         shortcut = self.shortcutLineEdit.get_shortcut()
         return name, display_name, color, shortcut
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._grab_focus)
+
+    def _grab_focus(self):
+        self.raise_()
+        self.activateWindow()
+        try:
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
 
 class TextInputDialog(MessageBoxBase):
     def __init__(self, title, placeholder="", default_text="", parent=None):
@@ -805,79 +847,129 @@ class TextInputDialog(MessageBoxBase):
     def get_text(self):
         return self.inputLineEdit.text().strip()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._grab_focus)
+
+    def _grab_focus(self):
+        self.raise_()
+        self.activateWindow()
+        try:
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+
+class MergeCategoryDialog(MessageBoxBase):
+    def __init__(self, source, targets, parent=None):
+        super().__init__(parent)
+        self.source = source
+        self.titleLabel = SubtitleLabel(f"将 '{source.display_name}' 合并到…", self)
+
+        self.comboBox = ComboBox(self)
+        for t in targets:
+            self.comboBox.addItem(f"{t.display_name} ({t.name})", userData=t)
+        if self.comboBox.count() > 0:
+            self.comboBox.setCurrentIndex(0)
+
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(SubtitleLabel("目标分类", self))
+        self.viewLayout.addWidget(self.comboBox)
+
+        self.widget.setMinimumWidth(400)
+        self.yesButton.setText("确定")
+        self.cancelButton.setText("取消")
+
+    def get_selected(self):
+        return self.comboBox.currentData()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._grab_focus)
+
+    def _grab_focus(self):
+        self.raise_()
+        self.activateWindow()
+        try:
+            hwnd = int(self.winId())
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
 
 class ImageDisplayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_interface = parent
         self.image_path = None
-        self.initUI()
+        self._pixmap = None
+        self._border_color = None
+        self._empty_text = "请选择文件夹开始标记"
+        self.setMinimumSize(320, 240)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-    def initUI(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+    def setImage(self, pixmap, border_color=None):
+        self._pixmap = pixmap
+        self._border_color = border_color
+        self.update()
 
-        self.imageLabel = QLabel("请选择文件夹开始标记", self)
-        self.imageLabel.setAlignment(Qt.AlignCenter)
-        self.imageLabel.setStyleSheet(
-            """
-            QLabel {
-                background-color: #2d2d2d;
-                border: 2px dashed #555;
-                border-radius: 8px;
-                min-height: 400px;
-                color: #888;
-                font-size: 16px;
-            }
-            """
-        )
-        self.imageLabel.setScaledContents(False)
-        self.imageLabel.setWordWrap(True)
-        self.imageLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.imageLabel.setMinimumSize(320, 240)
-
-        layout.addWidget(self.imageLabel)
+    def clearImage(self, text=None):
+        self._pixmap = None
+        self._border_color = None
+        self._empty_text = text or "请选择文件夹开始标记"
+        self.update()
 
     def load_image(self, image_path, max_size=None, border_color=None):
         if not image_path or not Path(image_path).exists():
-            self.imageLabel.setText("图片不存在")
-            self.image_path = None
+            self.clearImage("图片不存在")
             return
 
         try:
             pixmap = QPixmap(str(image_path))
             if pixmap.isNull():
-                self.imageLabel.setText("无法加载图片")
-                self.image_path = None
+                self.clearImage("无法加载图片")
                 return
 
             if max_size:
-                pixmap = pixmap.scaled(max_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+                pixmap = pixmap.scaled(max_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-            self.imageLabel.setPixmap(pixmap)
-
-            if border_color:
-                border_style = f"""
-                    QLabel {{
-                        background-color: #1a1a1a;
-                        border: 3px solid {border_color};
-                        border-radius: 4px;
-                    }}
-                """
-            else:
-                border_style = """
-                    QLabel {
-                        background-color: #1a1a1a;
-                        border: 3px solid #3a3a3a;
-                        border-radius: 4px;
-                    }
-                """
-
-            self.imageLabel.setStyleSheet(border_style)
             self.image_path = image_path
+            self.setImage(pixmap, border_color)
         except Exception as e:
-            self.imageLabel.setText(f"加载失败: {str(e)}")
-            self.image_path = None
+            self.clearImage(f"加载失败: {str(e)}")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect()
+
+        if self._pixmap and not self._pixmap.isNull():
+            painter.fillRect(rect, QColor("#1a1a1a"))
+
+            scaled = self._pixmap.scaled(
+                rect.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            x = (rect.width() - scaled.width()) // 2
+            y = (rect.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+
+            if self._border_color:
+                pen = QPen(QColor(self._border_color), 3)
+            else:
+                pen = QPen(QColor("#3a3a3a"), 3)
+            painter.setPen(pen)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -2, -2), 4, 4)
+        else:
+            painter.fillRect(rect, QColor("#2d2d2d"))
+            pen = QPen(QColor("#555555"), 2)
+            pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -2, -2), 8, 8)
+            painter.setPen(QColor("#888888"))
+            painter.drawText(rect, Qt.AlignCenter, self._empty_text)
 
     def mousePressEvent(self, event):
         if self.parent_interface:
@@ -941,12 +1033,18 @@ class CategoryCard(CardWidget):
         self.editButton.setToolTip("编辑")
         self.editButton.clicked.connect(self.onEditClicked)
 
+        self.mergeButton = ToolButton(FIF.MOVE, self)
+        self.mergeButton.setFixedSize(24, 24)
+        self.mergeButton.setToolTip("合并到…")
+        self.mergeButton.clicked.connect(self.onMergeClicked)
+
         self.deleteButton = ToolButton(FIF.DELETE, self)
         self.deleteButton.setFixedSize(24, 24)
         self.deleteButton.setToolTip("删除")
         self.deleteButton.clicked.connect(self.onDeleteClicked)
 
         buttonLayout.addWidget(self.editButton)
+        buttonLayout.addWidget(self.mergeButton)
         buttonLayout.addWidget(self.deleteButton)
         buttonLayout.addStretch()
 
@@ -975,6 +1073,7 @@ class CategoryCard(CardWidget):
 
         is_reserved = self.category.name == INVALID_CATEGORY_NAME
         self.editButton.setEnabled(not is_reserved)
+        self.mergeButton.setEnabled(not is_reserved)
         self.deleteButton.setEnabled(not is_reserved)
 
         self.installEventFilter(ToolTipFilter(self))
@@ -1008,6 +1107,10 @@ class CategoryCard(CardWidget):
     def onEditClicked(self):
         if self.parent_widget:
             self.parent_widget.editCategory(self.category)
+
+    def onMergeClicked(self):
+        if self.parent_widget:
+            self.parent_widget.mergeCategory(self.category)
 
     def onDeleteClicked(self):
         if self.parent_widget:
@@ -1060,7 +1163,7 @@ class ThumbnailListItem(QFrame):
             scaled = pixmap.scaled(
                 self.thumbLabel.size(),
                 Qt.KeepAspectRatio,
-                Qt.FastTransformation,
+                Qt.SmoothTransformation,
             )
             thumb_cache[cache_key] = scaled
 
@@ -1109,6 +1212,57 @@ class ThumbnailListItem(QFrame):
             self.parent_window.selectImageIndex(self.image_index)
 
 
+class LoadingDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedSize(400, 140)
+        self.setWindowModality(Qt.ApplicationModal)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 20)
+        layout.setSpacing(16)
+
+        self.label = QLabel("正在加载预览图...")
+        self.label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.label)
+
+        self.progressBar = QProgressBar(self)
+        self.progressBar.setRange(0, 100)
+        self.progressBar.setValue(0)
+        self.progressBar.setFixedHeight(6)
+        self.progressBar.setTextVisible(False)
+        layout.addWidget(self.progressBar)
+
+        if isDarkTheme():
+            self.setStyleSheet("""
+                LoadingDialog { background-color: #2d2d2d; border: 1px solid #555; border-radius: 8px; }
+                QLabel { color: #e0e0e0; font-size: 14px; }
+                QProgressBar { background-color: #1a1a1a; border: none; border-radius: 3px; }
+                QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
+            """)
+        else:
+            self.setStyleSheet("""
+                LoadingDialog { background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px; }
+                QLabel { color: #333; font-size: 14px; }
+                QProgressBar { background-color: #e0e0e0; border: none; border-radius: 3px; }
+                QProgressBar::chunk { background-color: #4a9eff; border-radius: 3px; }
+            """)
+
+    def closeEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+            return
+        super().keyPressEvent(event)
+
+    def setProgress(self, value):
+        self.progressBar.setValue(value)
+        QApplication.processEvents()
+
+
 class FullscreenLabelWindow(FramelessWindow):
     """Full-screen labeling window with filtered thumbnail list."""
 
@@ -1122,9 +1276,6 @@ class FullscreenLabelWindow(FramelessWindow):
         self.thumbnailItems = []
         self.thumbnailPositions = []
         self.filtered_indices = []
-        self._thumbnailBuildToken = 0
-        self._thumbnailBuildNext = 0
-        self._thumbnailBuildBatchSize = 180
         self._thumbCache = {}
         self._sourcePixmapCache = {}
         self._sourcePixmapOrder = []
@@ -1132,6 +1283,9 @@ class FullscreenLabelWindow(FramelessWindow):
         self._lastActiveThumbnailPosition = -1
         self._themeIsDark = None
         self._thumbnailThemeDirty = True
+        self._loadingDialog = None
+        self._loadingProgress = 0
+        self._loadingTotal = 0
         self.setObjectName("fullscreenLabelWindow")
         self.setWindowTitle("图片标记")
         self.setWindowIcon(QIcon(":/gallery/images/logo.png"))
@@ -1371,25 +1525,6 @@ class FullscreenLabelWindow(FramelessWindow):
         self.filterLabel.setStyleSheet(f"QLabel {{ color: {sub_text}; font-size: 13px; }}")
         self.setCurrentLabelText("当前标记: 无", None, label_bg)
 
-    def _applyImageBorderStyle(self, border_color=None):
-        if border_color:
-            border_style = f"""
-                QLabel {{
-                    background-color: #1a1a1a;
-                    border: 3px solid {border_color};
-                    border-radius: 4px;
-                }}
-            """
-        else:
-            border_style = """
-                QLabel {
-                    background-color: #1a1a1a;
-                    border: 3px solid #3a3a3a;
-                    border-radius: 4px;
-                }
-            """
-        self.imageDisplay.imageLabel.setStyleSheet(border_style)
-
     def _getSourcePixmap(self, image_path):
         key = str(image_path)
         pixmap = self._sourcePixmapCache.get(key)
@@ -1624,16 +1759,8 @@ class FullscreenLabelWindow(FramelessWindow):
             self.thumbnailListLayout.takeAt(count - 1)
 
     def _startThumbnailRebuild(self, filtered_indices):
-        self._thumbnailBuildToken += 1
-        token = self._thumbnailBuildToken
         self.filtered_indices = filtered_indices
-        self._thumbnailBuildNext = 0
         self._clearThumbnailList()
-        self._appendThumbnailBatch(token)
-
-    def _appendThumbnailBatch(self, token):
-        if token != self._thumbnailBuildToken:
-            return
 
         interface = self.label_interface
         if not interface:
@@ -1642,21 +1769,24 @@ class FullscreenLabelWindow(FramelessWindow):
         images = interface.image_files
         self._removeTrailingThumbnailStretch()
 
-        start = self._thumbnailBuildNext
-        end = min(len(self.filtered_indices), start + self._thumbnailBuildBatchSize)
-        for pos in range(start, end):
-            original_index = self.filtered_indices[pos]
+        for pos, original_index in enumerate(filtered_indices):
             item = ThumbnailListItem(original_index, images[original_index], self)
             self.thumbnailListLayout.addWidget(item)
             self.thumbnailItems.append(item)
             self.thumbnailPositions.append(pos)
 
-        self._thumbnailBuildNext = end
         self.thumbnailListLayout.addStretch()
-
         self.refreshImageList(force_rebuild=False)
-        if self._thumbnailBuildNext < len(self.filtered_indices):
-            QTimer.singleShot(0, lambda t=token: self._appendThumbnailBatch(t))
+
+        total = len(self.thumbnailItems)
+        if self._loadingDialog and total > 0:
+            self._loadingDialog.progressBar.setRange(0, total)
+        for i, item in enumerate(self.thumbnailItems):
+            if not item._thumb_loaded:
+                item.ensureThumbnailLoaded(self._thumbCache)
+            if self._loadingDialog and i % 3 == 0:
+                self._loadingDialog.setProgress(i + 1)
+                self._loadingDialog.label.setText(f"正在加载预览图 ({i + 1}/{total})")
 
     def refreshImageList(self, force_rebuild=False):
         interface = self.label_interface
@@ -1708,9 +1838,7 @@ class FullscreenLabelWindow(FramelessWindow):
                 if category and category.color:
                     border_color = category.color
 
-            load_thumb = active_pos >= 0 and abs(filtered_pos - active_pos) <= 24
-            if load_thumb:
-                item.ensureThumbnailLoaded(self._thumbCache)
+            item.ensureThumbnailLoaded(self._thumbCache)
             item.updateState(active=(filtered_pos == active_pos), border_color=border_color, label_text=label_text)
 
         if active_pos in self.thumbnailPositions:
@@ -1826,16 +1954,12 @@ class FullscreenLabelWindow(FramelessWindow):
                 border_color = category.color
                 label_color = category.color
 
-        image_area = self.imageDisplay.size()
-        image_size = QSize(max(320, image_area.width() - 16), max(240, image_area.height() - 16))
         source_pixmap = self._getSourcePixmap(img_file)
         if source_pixmap is None:
-            self.imageDisplay.load_image(str(img_file), image_size, border_color)
+            self.imageDisplay.clearImage("无法加载图片")
         else:
-            scaled = source_pixmap.scaled(image_size, Qt.KeepAspectRatio, Qt.FastTransformation)
-            self.imageDisplay.imageLabel.setPixmap(scaled)
+            self.imageDisplay.setImage(source_pixmap, border_color)
             self.imageDisplay.image_path = str(img_file)
-            self._applyImageBorderStyle(border_color)
 
         self.indexLabel.setText(f"{interface.current_index + 1} / {len(interface.image_files)}")
         if label_display:
@@ -2151,7 +2275,7 @@ class ImageLabelInterface(GalleryInterface):
 
     def openFullscreenLabeler(self):
         if not self.project or not self.image_files:
-            InfoBar.warning("警告", "请先选择包含图片的文件夹", duration=2000, parent=self)
+            InfoBar.warning("警告", "请选择包含图片的文件夹", duration=2000, parent=self)
             return
 
         if self.fullscreenLabelWindow and self.fullscreenLabelWindow.isVisible():
@@ -2161,13 +2285,34 @@ class ImageLabelInterface(GalleryInterface):
 
         self.fullscreenLabelWindow = FullscreenLabelWindow(self)
         self.fullscreenLabelWindow.showMaximized()
+        QApplication.processEvents()
+
+        self._loadingDialog = LoadingDialog(self.fullscreenLabelWindow)
+        self._loadingDialog.show()
+        QApplication.processEvents()
+
         QTimer.singleShot(30, self.initializeFullscreenLabelWindow)
 
     def initializeFullscreenLabelWindow(self):
         if not self.fullscreenLabelWindow or not self.fullscreenLabelWindow.isVisible():
+            self._closeLoadingDialog()
             return
-        self.fullscreenLabelWindow.refreshCategories()
-        self.fullscreenLabelWindow.refreshView()
+        try:
+            if self.project and 0 <= self.project.current_image_index < len(self.image_files):
+                self.current_index = self.project.current_image_index
+
+            self.fullscreenLabelWindow._loadingDialog = self._loadingDialog
+            QApplication.processEvents()
+            self.fullscreenLabelWindow.refreshCategories()
+            self.fullscreenLabelWindow.refreshView()
+        finally:
+            self._closeLoadingDialog()
+
+    def _closeLoadingDialog(self):
+        if self._loadingDialog:
+            self._loadingDialog.close()
+            self._loadingDialog.deleteLater()
+            self._loadingDialog = None
 
     def refreshFullscreenLabelWindow(self, refresh_categories=False):
         if not self.fullscreenLabelWindow or not self.fullscreenLabelWindow.isVisible():
@@ -2458,7 +2603,9 @@ class ImageLabelInterface(GalleryInterface):
             return False, "display_name 不能为空"
 
         if normalized_name == INVALID_CATEGORY_NAME:
-            return False, "“无效类”为系统保留分类"
+            return False, f"“{INVALID_CATEGORY_DISPLAY_NAME}”为系统保留分类"
+        if normalized_display_name == INVALID_CATEGORY_DISPLAY_NAME:
+            return False, f"“{INVALID_CATEGORY_DISPLAY_NAME}”为系统保留分类"
 
         for category in self.project.categories:
             if category.name == normalized_name and category.name != original_name:
@@ -2476,7 +2623,7 @@ class ImageLabelInterface(GalleryInterface):
 
     def openCategoryDialog(self, category=None):
         dialog = CategoryEditDialog(category, self.window())
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return None
 
         name, display_name, color, shortcut = dialog.get_data()
@@ -2539,10 +2686,62 @@ class ImageLabelInterface(GalleryInterface):
             message += f"\n该类别下已有 {count} 张图片被标记，删除后这些标记将被清除。"
 
         w = MessageBox("确认删除", message, self.window())
-        if w.exec() and self.project.delete_category(category.name):
+        if self._exec_dialog(w) and self.project.delete_category(category.name):
             self.updateCategoryList()
             self.loadCurrentImage()
             InfoBar.success("成功", f"已删除类别: {category.display_name}", duration=2000, parent=self)
+
+    def mergeCategory(self, category):
+        if not self.project:
+            return
+        if category.name == INVALID_CATEGORY_NAME:
+            InfoBar.warning("警告", "系统保留分类不可操作", duration=2000, parent=self)
+            return
+
+        targets = [c for c in self.project.categories
+                   if c.name != category.name and not self.project.is_reserved_category(c.name)]
+        if not targets:
+            InfoBar.warning("警告", "没有可合并到的目标分类", duration=2000, parent=self)
+            return
+
+        dialog = MergeCategoryDialog(category, targets, self.window())
+        if not self._exec_dialog(dialog):
+            return
+
+        target = dialog.get_selected()
+        if not target:
+            return
+
+        count = self.project.get_category_count(category.name)
+        confirm = MessageBox(
+            "确认合并",
+            f"将分类 '{category.display_name}' ({count} 张标记) 合并到 '{target.display_name}'？\n"
+            f"合并后 '{category.display_name}' 将被删除。",
+            self.window(),
+        )
+        if not self._exec_dialog(confirm):
+            return
+
+        success, msg = self.project.merge_category(category.name, target.name)
+        if success:
+            self.updateCategoryList()
+            self.loadCurrentImage()
+            InfoBar.success("成功", f"已合并到 '{target.display_name}'", duration=2000, parent=self)
+        else:
+            InfoBar.warning("警告", msg, duration=2000, parent=self)
+
+    def _exec_dialog(self, dialog):
+        QTimer.singleShot(0, lambda: self._force_dialog_focus(dialog))
+        return dialog.exec()
+
+    def _force_dialog_focus(self, widget):
+        widget.raise_()
+        widget.activateWindow()
+        try:
+            hwnd = int(widget.winId())
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
 
     def savePreset(self):
         if not self.project:
@@ -2550,7 +2749,7 @@ class ImageLabelInterface(GalleryInterface):
             return
 
         dialog = TextInputDialog("保存分类预设", "输入预设名称", self.getSelectedPresetName() or "", self.window())
-        if not dialog.exec():
+        if not self._exec_dialog(dialog):
             return
 
         preset_name = dialog.get_text()
@@ -2560,7 +2759,7 @@ class ImageLabelInterface(GalleryInterface):
 
         if self.presetStore.has_preset(preset_name):
             overwrite = MessageBox("覆盖预设", f"预设 '{preset_name}' 已存在，是否覆盖？", self.window())
-            if not overwrite.exec():
+            if not self._exec_dialog(overwrite):
                 return
 
         editable_categories = self.project.get_editable_categories()
@@ -2580,7 +2779,7 @@ class ImageLabelInterface(GalleryInterface):
 
         categories = self.presetStore.get_preset_categories(preset_name)
         confirm = MessageBox("应用预设", f"应用预设 '{preset_name}' 将替换当前分类组，是否继续？", self.window())
-        if not confirm.exec():
+        if not self._exec_dialog(confirm):
             return
 
         self.project.replace_categories_from_preset(categories)
@@ -2595,7 +2794,7 @@ class ImageLabelInterface(GalleryInterface):
             return
 
         confirm = MessageBox("删除预设", f"确定删除预设 '{preset_name}' 吗？", self.window())
-        if not confirm.exec():
+        if not self._exec_dialog(confirm):
             return
 
         if self.presetStore.delete_preset(preset_name):
@@ -2666,7 +2865,7 @@ class ImageLabelInterface(GalleryInterface):
             f"将扫描 {output_dir} 下的分类文件夹，并写入 label_config.json。是否继续？",
             self.window(),
         )
-        if not confirm.exec():
+        if not self._exec_dialog(confirm):
             return
 
         try:

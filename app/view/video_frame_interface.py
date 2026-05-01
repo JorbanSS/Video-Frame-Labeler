@@ -197,8 +197,8 @@ class FrameExtractionWorker(QThread):
         # 帧率设置
         extraction_mode = self.settings.get('extraction_mode', 'fps')
         if extraction_mode == 'fps':
-            fps = self.settings.get('fps', 20) / 10.0  # Convert back from integer
-            cmd.extend(['-vf', f'fps={fps}'])
+            fps = self._getEffectiveExtractionFps()
+            cmd.extend(['-vf', f'fps={fps:g}'])
         elif extraction_mode == 'interval':
             interval = self.settings.get('interval', 1)
             cmd.extend(['-vf', f'fps=1/{interval}'])
@@ -223,8 +223,9 @@ class FrameExtractionWorker(QThread):
         
         if extraction_mode == 'fps':
             # 按帧率提取
-            fps = self.settings.get('fps', 20) / 10.0
-            return max(1, int(video_duration * fps))
+            fps = self._getEffectiveExtractionFps()
+            estimated_frames = int(video_duration * fps)
+            return max(1, min(total_frames, estimated_frames))
         elif extraction_mode == 'interval':
             # 按时间间隔提取
             interval = self.settings.get('interval', 1)
@@ -232,6 +233,14 @@ class FrameExtractionWorker(QThread):
         else:  # frame_count mode
             # 指定输出帧数
             return self.settings.get('frame_count', 100)
+
+    def _getEffectiveExtractionFps(self):
+        """Return the actual FPS used for extraction without duplicating frames."""
+        requested_fps = max(1.0, float(self.settings.get('fps', 20) or 20))
+        source_fps = float(self.settings.get('source_fps', 0) or 0)
+        if source_fps > 0:
+            return min(requested_fps, source_fps)
+        return requested_fps
     
     def stop(self):
         self._running = False
@@ -363,7 +372,7 @@ class VideoFrameInterface(GalleryInterface):
         fpsModeLayout.addWidget(self.fpsModeRadio)
         
         self.fpsSpinBox = SpinBox(self)
-        self.fpsSpinBox.setRange(1, 600)  # 0.1-60 fps, multiply by 10 for integer
+        self.fpsSpinBox.setRange(1, 60)
         self.fpsSpinBox.setValue(cfg.extractionFps.value)  # 从配置加载
         self.fpsSpinBox.setSingleStep(1)
         fpsModeLayout.addWidget(self.fpsSpinBox)
@@ -576,8 +585,9 @@ class VideoFrameInterface(GalleryInterface):
         
         if self.fpsModeRadio.isChecked():
             # 按帧率提取
-            extract_fps = self.fpsSpinBox.value() / 10.0
-            self.estimatedImages = int(duration * extract_fps)
+            requested_fps = self.fpsSpinBox.value()
+            extract_fps = min(requested_fps, fps) if fps > 0 else requested_fps
+            self.estimatedImages = min(total_frames, int(duration * extract_fps))
             self.estimatedCountLabel.setText(f"预计一共输出图片: {self.estimatedImages} 张")
             self.progressLabel.setText(f"预计一共输出图片: {self.estimatedImages} 张")
             
@@ -1007,7 +1017,8 @@ class VideoFrameInterface(GalleryInterface):
             'prefix': self.prefixEdit.text() or 'frame',
             'digits': self.digitsSpinBox.value(),
             'total_frames': self.videoInfo.get('total_frames', 100),
-            'duration': self.videoInfo.get('duration', 0)
+            'duration': self.videoInfo.get('duration', 0),
+            'source_fps': self.videoInfo.get('fps', 0)
         }
         
         # 禁用开始按钮，启用停止按钮
@@ -1065,7 +1076,8 @@ class VideoFrameInterface(GalleryInterface):
             'prefix': self.prefixEdit.text() or 'frame',
             'digits': self.digitsSpinBox.value(),
             'total_frames': self.videoInfo.get('total_frames', 100),
-            'duration': self.videoInfo.get('duration', 0)
+            'duration': self.videoInfo.get('duration', 0),
+            'source_fps': self.videoInfo.get('fps', 0)
         }
 
         self.startButton.setEnabled(False)
@@ -1259,7 +1271,8 @@ class VideoFrameInterface(GalleryInterface):
             'prefix': self.prefixEdit.text() or 'frame',
             'digits': self.digitsSpinBox.value(),
             'total_frames': self.videoInfo.get('total_frames', 100),
-            'duration': self.videoInfo.get('duration', 0)
+            'duration': self.videoInfo.get('duration', 0),
+            'source_fps': self.videoInfo.get('fps', 0)
         }
 
         self.startButton.setEnabled(False)

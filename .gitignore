@@ -40,3 +40,9 @@ PySide6_Fluent_Widgets.egg-info/
 
 # 忽略数据集
 data/
+
+# Imported action models
+model/*.pth
+model/*.pt
+model/models_registry.json
+!model/.gitkeep

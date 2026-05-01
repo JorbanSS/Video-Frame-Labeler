@@ -23,6 +23,7 @@ from .text_interface import TextInterface
 from .view_interface import ViewInterface
 from .video_frame_interface import VideoFrameInterface
 from .image_label_interface import ImageLabelInterface
+from .action_recognition_interface import ActionRecognitionInterface
 from .export_interface import ExportInterface
 from ..common.config import ZH_SUPPORT_URL, EN_SUPPORT_URL, cfg
 from ..common.icon import Icon
@@ -56,6 +57,7 @@ class MainWindow(FluentWindow):
         self.viewInterface = ViewInterface(self)
         self.videoFrameInterface = VideoFrameInterface(self)
         self.imageLabelInterface = ImageLabelInterface(self)
+        self.actionRecognitionInterface = ActionRecognitionInterface(self)
         self.exportInterface = ExportInterface(self)
 
         # enable acrylic effect
@@ -82,6 +84,7 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.videoFrameInterface, FIF.VIDEO, "视频帧提取", pos)
         self.addSubInterface(self.imageLabelInterface, FIF.TAG, "图片标记", pos)
         self.addSubInterface(self.exportInterface, FIF.SAVE, "导出", pos)
+        self.addSubInterface(self.actionRecognitionInterface, FIF.PLAY, "动作判断", pos)
 
         # add theme toggle button to bottom
         self.navigationInterface.addItem(
@@ -133,6 +136,8 @@ class MainWindow(FluentWindow):
     def closeEvent(self, e):
         if hasattr(self, 'imageLabelInterface'):
             self.imageLabelInterface.flushProjectSave()
+        if hasattr(self, 'actionRecognitionInterface'):
+            self.actionRecognitionInterface.flushProjectSave()
         self.themeListener.terminate()
         self.themeListener.deleteLater()
         super().closeEvent(e)

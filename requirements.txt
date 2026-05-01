@@ -5,3 +5,6 @@ colorthief
 scipy
 pillow
 PyQt-Fluent-Widgets
+torch
+torchvision
+opencv-python
