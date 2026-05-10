@@ -4,7 +4,6 @@ import sys
 import json
 import shutil
 import re
-import ctypes
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QSize, QStandardPaths, QTimer
@@ -44,6 +43,7 @@ from qfluentwidgets import (
 from qframelesswindow import FramelessWindow
 
 from .gallery_interface import GalleryInterface
+from ..common.dialog_utils import exec_modal_dialog, force_dialog_focus
 from ..common.config import cfg
 from ..common.signal_bus import signalBus
 
@@ -816,16 +816,7 @@ class CategoryEditDialog(MessageBoxBase):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(0, self._grab_focus)
-
-    def _grab_focus(self):
-        self.raise_()
-        self.activateWindow()
-        try:
-            hwnd = int(self.winId())
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        force_dialog_focus(self)
 
 
 class TextInputDialog(MessageBoxBase):
@@ -849,16 +840,7 @@ class TextInputDialog(MessageBoxBase):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(0, self._grab_focus)
-
-    def _grab_focus(self):
-        self.raise_()
-        self.activateWindow()
-        try:
-            hwnd = int(self.winId())
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        force_dialog_focus(self)
 
 
 class MergeCategoryDialog(MessageBoxBase):
@@ -886,16 +868,7 @@ class MergeCategoryDialog(MessageBoxBase):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(0, self._grab_focus)
-
-    def _grab_focus(self):
-        self.raise_()
-        self.activateWindow()
-        try:
-            hwnd = int(self.winId())
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        force_dialog_focus(self)
 
 
 class ImageDisplayWidget(QWidget):
@@ -2731,17 +2704,7 @@ class ImageLabelInterface(GalleryInterface):
             InfoBar.warning("警告", msg, duration=2000, parent=self)
 
     def _exec_dialog(self, dialog):
-        QTimer.singleShot(0, lambda: self._force_dialog_focus(dialog))
-        return dialog.exec()
-
-    def _force_dialog_focus(self, widget):
-        widget.raise_()
-        widget.activateWindow()
-        try:
-            hwnd = int(widget.winId())
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        return exec_modal_dialog(dialog)
 
     def savePreset(self):
         if not self.project:

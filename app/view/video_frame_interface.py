@@ -725,11 +725,16 @@ class VideoFrameInterface(GalleryInterface):
             self.loadVideoFile(filePath)
 
     def loadVideoFile(self, filePath):
-        self.videoPath = filePath
+        try:
+            paths = self.prepareProjectStructure(filePath)
+        except Exception as e:
+            InfoBar.error("错误", f"准备项目目录失败: {str(e)}", duration=3000, parent=self)
+            return
+
+        self.videoPath = str(paths['video_path'])
         self.setExtractionSectionsVisible(True)
-        projectPaths = self.buildProjectPaths(filePath)
-        self.outputDirEdit.setText(str(projectPaths['origin_dir']))
-        self.loadVideoInfo(filePath)
+        self.outputDirEdit.setText(str(paths['origin_dir']))
+        self.loadVideoInfo(self.videoPath)
         self.startButton.setEnabled(True)
         self.updateEstimatedCount()
     

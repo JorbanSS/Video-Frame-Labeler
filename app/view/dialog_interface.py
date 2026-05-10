@@ -5,6 +5,7 @@ from qfluentwidgets import (PushButton, Dialog, MessageBox, ColorDialog, Teachin
                             InfoBarIcon, Flyout, FlyoutView, TeachingTipView, FlyoutAnimationType, SubtitleLabel,
                             LineEdit, MessageBoxBase)
 from ..common.translator import Translator
+from ..common.dialog_utils import exec_modal_dialog
 from .gallery_interface import GalleryInterface
 
 
@@ -90,7 +91,7 @@ class DialogInterface(GalleryInterface):
             "If the content of the message box is veeeeeeeeeeeeeeeeeeeeeeeeeery long, it will automatically wrap like this.")
         w = Dialog(title, content, self.window())
         w.setContentCopyable(True)
-        if w.exec():
+        if exec_modal_dialog(w):
             print('Yes button is pressed')
         else:
             print('Cancel button is pressed')
@@ -101,20 +102,20 @@ class DialogInterface(GalleryInterface):
             "If the content of the message box is veeeeeeeeeeeeeeeeeeeeeeeeeery long, it will automatically wrap like this.")
         w = MessageBox(title, content, self.window())
         w.setContentCopyable(True)
-        if w.exec():
+        if exec_modal_dialog(w):
             print('Yes button is pressed')
         else:
             print('Cancel button is pressed')
 
     def showCustomDialog(self):
         w = CustomMessageBox(self.window())
-        if w.exec():
+        if exec_modal_dialog(w):
             print(w.urlLineEdit.text())
 
     def showColorDialog(self):
         w = ColorDialog(Qt.cyan, self.tr('Choose color'), self.window())
         w.colorChanged.connect(lambda c: print(c.name()))
-        w.exec()
+        exec_modal_dialog(w)
 
     def showBottomTeachingTip(self):
         TeachingTip.create(

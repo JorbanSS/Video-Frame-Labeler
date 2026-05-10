@@ -1,5 +1,4 @@
 # coding:utf-8
-import ctypes
 import json
 import os
 import re
@@ -32,22 +31,13 @@ from qfluentwidgets import (
 )
 
 from .gallery_interface import GalleryInterface
+from ..common.dialog_utils import exec_modal_dialog
 from ..common.config import cfg
 from ..common.signal_bus import signalBus
 
 
 EXPORT_HISTORY_PATH = Path(__file__).resolve().parent.parent / "config" / "export_history.json"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff"}
-
-
-def _force_dialog_focus(widget):
-    widget.raise_()
-    widget.activateWindow()
-    try:
-        hwnd = int(widget.winId())
-        ctypes.windll.user32.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
 
 
 def sanitize_folder_name(name):
@@ -644,8 +634,7 @@ class ExportInterface(GalleryInterface):
             f"导出前会清空目录中的所有内容：\n{outputPath}\n\n是否继续？",
             self.window(),
         )
-        QTimer.singleShot(0, lambda: _force_dialog_focus(confirm))
-        if not confirm.exec():
+        if not exec_modal_dialog(confirm):
             return
 
         self.setExportRunning(True)

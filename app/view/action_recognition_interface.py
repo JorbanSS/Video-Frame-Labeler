@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QKeyEvent, QKeySequence, QPixmap
+from PyQt5.QtGui import QIcon, QImage, QKeyEvent, QKeySequence, QPixmap
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtWidgets import (
@@ -29,6 +29,7 @@ from qfluentwidgets import (
     BodyLabel,
     ComboBox,
     FluentIcon as FIF,
+    FluentTitleBar,
     InfoBar,
     MessageBox,
     ProgressBar,
@@ -38,6 +39,7 @@ from qfluentwidgets import (
     FlowLayout,
     ToolTipFilter,
 )
+from qframelesswindow import FramelessWindow
 
 from .gallery_interface import GalleryInterface
 from .image_label_interface import DEFAULT_CATEGORY_COLORS, INVALID_CATEGORY_NAME, INVALID_CATEGORY_DISPLAY_NAME, Category, LabelProject
@@ -50,6 +52,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_STORE_DIR = PROJECT_ROOT / "model"
 MODEL_REGISTRY_PATH = MODEL_STORE_DIR / "models_registry.json"
 ACTION_CONFIG_NAME = "action_analysis_config.json"
+CONFIDENCE_THRESHOLD = 0.5
 DEFAULT_CLASS_NAMES = ["closeup_celebration", "dinking", "drive_smash", "idle_walking", "serve"]
 DEFAULT_CLASS_NAMES_CN = {
     "closeup_celebration": "近景庆祝",
@@ -92,6 +95,14 @@ def sanitize_file_stem(text):
     })
     stem = stem.translate(replace_map).rstrip(" .")
     return stem or "model"
+
+
+def format_confidence(confidence):
+    try:
+        value = max(0.0, min(1.0, float(confidence or 0)))
+    except Exception:
+        value = 0.0
+    return f"{value * 100:.1f}%"
 
 
 def get_ffmpeg_path():
@@ -292,16 +303,16 @@ class ActionVideoProject:
         safe_json_save(
             self.config_path,
             {
-                "v": 2,
-                "video": str(self.video_path),
-                "model": self.selected_model_id,
-                "window": self.window_size,
+                "version": 3,
+                "video_path": str(self.video_path),
+                "selected_model_id": self.selected_model_id,
+                "window_size": self.window_size,
                 "sample_rate": self.sample_rate,
-                "frames": self.total_frames,
+                "total_frames": self.total_frames,
                 "fps": self.fps,
-                "duration": self.duration_ms,
-                "p": self.compact_predictions(),
-                "l": self.compact_labels(),
+                "duration_ms": self.duration_ms,
+                "model_predictions": self.compact_predictions(),
+                "labeled_frames": self.compact_labels(),
             },
         )
 
@@ -318,19 +329,46 @@ class ActionVideoProject:
                 if isinstance(item, dict):
                     class_name = item.get("class_name") or item.get("c") or ""
                     confidence = item.get("confidence", item.get("s", 0))
+                    top_class_name = item.get("top_class_name") or item.get("t") or ""
+                    probabilities = item.get("probabilities") or item.get("p") or {}
+                    window_size = item.get("window_size", item.get("w", 0))
                 elif isinstance(item, list) and item:
                     class_name = item[0]
                     confidence = item[1] if len(item) > 1 else 0
+                    top_class_name = item[2] if len(item) > 2 else ""
+                    probabilities = {}
+                    window_size = 0
                 else:
                     class_name = item
                     confidence = 0
+                    top_class_name = ""
+                    probabilities = {}
+                    window_size = 0
                 class_name = str(class_name or "").strip()
                 if not class_name:
                     continue
-                model_bucket[str(frame_index)] = {
+                prediction = {
                     "class_name": class_name,
                     "confidence": float(confidence or 0),
                 }
+                top_class_name = str(top_class_name or "").strip()
+                if top_class_name:
+                    prediction["top_class_name"] = top_class_name
+                if isinstance(probabilities, dict):
+                    clean_probabilities = {}
+                    for name, score in probabilities.items():
+                        name = str(name or "").strip()
+                        if name:
+                            clean_probabilities[name] = float(score or 0)
+                    if clean_probabilities:
+                        prediction["probabilities"] = clean_probabilities
+                try:
+                    window_size = int(window_size or 0)
+                except Exception:
+                    window_size = 0
+                if window_size > 0:
+                    prediction["window_size"] = window_size
+                model_bucket[str(frame_index)] = prediction
             result[str(model_id)] = model_bucket
         return result
 
@@ -344,11 +382,11 @@ class ActionVideoProject:
         return result
 
     def compact_predictions(self):
-        compact = {}
+        predictions = {}
         for model_id, frames in self.model_predictions.items():
             if not isinstance(frames, dict):
                 continue
-            compact_frames = {}
+            readable_frames = {}
             for frame_index, item in frames.items():
                 if not isinstance(item, dict):
                     continue
@@ -356,9 +394,26 @@ class ActionVideoProject:
                 if not class_name:
                     continue
                 confidence = round(float(item.get("confidence", 0) or 0), 6)
-                compact_frames[str(frame_index)] = [class_name, confidence]
-            compact[str(model_id)] = compact_frames
-        return compact
+                probabilities = item.get("probabilities", {})
+                top_class_name = str(item.get("top_class_name", "") or "").strip()
+                window_size = int(item.get("window_size", 0) or 0)
+                prediction_item = {
+                    "class_name": class_name,
+                    "confidence": confidence,
+                }
+                if probabilities:
+                    prediction_item["probabilities"] = {
+                        str(name): round(float(score or 0), 6)
+                        for name, score in probabilities.items()
+                        if str(name or "").strip()
+                    }
+                if top_class_name:
+                    prediction_item["top_class_name"] = top_class_name
+                if window_size > 0:
+                    prediction_item["window_size"] = window_size
+                readable_frames[str(frame_index)] = prediction_item
+            predictions[str(model_id)] = readable_frames
+        return predictions
 
     def compact_labels(self):
         return {
@@ -409,16 +464,27 @@ class ActionVideoProject:
             if frame_index in allowed
         }
 
-    def pending_frame_indices(self, model_id, sample_indices=None):
+    def pending_frame_indices(self, model_id, sample_indices=None, window_size=None):
         bucket = self.get_prediction_bucket(model_id)
         indices = sample_indices if sample_indices is not None else range(self.total_frames)
-        return [
-            index for index in indices
-            if str(index) not in bucket
-        ]
+        expected_window = None
+        if window_size is not None:
+            expected_window = max(1, int(window_size or 1))
+            if expected_window % 2 == 0:
+                expected_window += 1
+
+        pending = []
+        for index in indices:
+            prediction = bucket.get(str(index))
+            if not isinstance(prediction, dict):
+                pending.append(index)
+                continue
+            if expected_window is not None and int(prediction.get("window_size", 0) or 0) != expected_window:
+                pending.append(index)
+        return pending
 
     def set_raw_prediction(self, model_id, frame_index, prediction):
-        self.get_prediction_bucket(model_id)[str(frame_index)] = prediction
+        self.get_prediction_bucket(model_id)[str(frame_index)] = self.normalize_prediction(prediction)
 
     def get_frame_label(self, frame_index):
         return self.labeled_frames.get(str(frame_index), "")
@@ -445,14 +511,95 @@ class ActionVideoProject:
         return True
 
     def get_nearest_frame_label(self, frame_index):
+        prediction = self.get_nearest_frame_prediction(frame_index)
+        return prediction.get("class_name", "") if prediction else ""
+
+    def normalize_prediction(self, prediction):
+        if not isinstance(prediction, dict):
+            return {"class_name": "", "confidence": 0.0}
+
+        probabilities = prediction.get("probabilities", {})
+        if isinstance(probabilities, dict) and probabilities:
+            return self.vote_probability_maps(
+                [probabilities],
+                window_size=prediction.get("window_size", 0),
+            )
+
+        class_name = str(prediction.get("class_name", "") or "").strip()
+        confidence = float(prediction.get("confidence", 0) or 0)
+        top_class_name = str(prediction.get("top_class_name", "") or "").strip()
+        if confidence < CONFIDENCE_THRESHOLD and class_name != INVALID_CATEGORY_NAME:
+            top_class_name = top_class_name or class_name
+            class_name = INVALID_CATEGORY_NAME
+
+        result = {
+            "class_name": class_name,
+            "confidence": confidence,
+        }
+        if top_class_name:
+            result["top_class_name"] = top_class_name
+        try:
+            window_size = int(prediction.get("window_size", 0) or 0)
+        except Exception:
+            window_size = 0
+        if window_size > 0:
+            result["window_size"] = window_size
+        return result
+
+    def vote_probability_maps(self, probability_maps, window_size=0):
+        totals = defaultdict(float)
+        valid_count = 0
+        for probability_map in probability_maps:
+            if not isinstance(probability_map, dict):
+                continue
+            valid_count += 1
+            for class_name, score in probability_map.items():
+                class_name = str(class_name or "").strip()
+                if class_name:
+                    totals[class_name] += float(score or 0)
+
+        if not totals or valid_count <= 0:
+            return {"class_name": INVALID_CATEGORY_NAME, "confidence": 0.0}
+
+        averaged = {
+            class_name: totals[class_name] / valid_count
+            for class_name in totals
+        }
+        top_class_name = max(averaged, key=averaged.get)
+        confidence = float(averaged[top_class_name])
+        class_name = top_class_name if confidence >= CONFIDENCE_THRESHOLD else INVALID_CATEGORY_NAME
+        result = {
+            "class_name": class_name,
+            "top_class_name": top_class_name,
+            "confidence": confidence,
+            "probabilities": averaged,
+        }
+        try:
+            window_size = int(window_size or 0)
+        except Exception:
+            window_size = 0
+        if window_size > 0:
+            result["window_size"] = window_size
+        return result
+
+    def get_nearest_frame_prediction(self, frame_index):
         if not self.labeled_frames:
-            return ""
+            return {}
         try:
             target = int(frame_index)
             nearest_key = min(self.labeled_frames.keys(), key=lambda key: abs(int(key) - target))
-            return self.labeled_frames.get(nearest_key, "")
+            class_name = self.labeled_frames.get(nearest_key, "")
+            prediction = {}
+            if self.selected_model_id:
+                prediction = self.get_prediction_bucket(self.selected_model_id).get(nearest_key, {})
+            normalized = self.normalize_prediction(prediction) if prediction else {}
+            if not normalized:
+                normalized = {"class_name": class_name, "confidence": 0.0}
+            normalized["class_name"] = class_name or normalized.get("class_name", "")
+            normalized["frame_index"] = int(nearest_key)
+            return normalized
         except Exception:
-            return ""
+            return {}
 
     def apply_sliding_window_vote(self, model_id, window_size, sample_indices=None):
         window_size = max(1, int(window_size))
@@ -469,8 +616,9 @@ class ActionVideoProject:
         new_labeled_frames = {}
 
         for frame_index in indices:
-            selected = bucket[str(frame_index)]
-            selected_name = selected["class_name"]
+            selected = self.normalize_prediction(bucket[str(frame_index)])
+            selected_name = selected.get("class_name", "") or INVALID_CATEGORY_NAME
+            bucket[str(frame_index)] = selected
             self.ensure_category(selected_name, selected_name)
 
             key = str(frame_index)
@@ -489,6 +637,21 @@ class ActionVideoProject:
         for category_name in self.labeled_frames.values():
             counts[category_name] = counts.get(category_name, 0) + 1
         return counts
+
+    def get_label_stats(self):
+        stats = defaultdict(lambda: {"count": 0, "confidence_total": 0.0, "confidence_count": 0})
+        bucket = self.get_prediction_bucket(self.selected_model_id) if self.selected_model_id else {}
+        for frame_index, category_name in self.labeled_frames.items():
+            item = stats[category_name]
+            item["count"] += 1
+            prediction = bucket.get(str(frame_index), {})
+            if isinstance(prediction, dict):
+                try:
+                    item["confidence_total"] += float(prediction.get("confidence", 0) or 0)
+                    item["confidence_count"] += 1
+                except Exception:
+                    pass
+        return stats
 
 
 class TorchActionClassifier:
@@ -597,13 +760,20 @@ class TorchActionClassifier:
                 totals[class_name] = totals.get(class_name, 0.0) + float(score)
 
         if not totals:
-            return {"class_name": "", "confidence": 0.0}
+            return {"class_name": INVALID_CATEGORY_NAME, "confidence": 0.0}
 
-        class_name = max(totals, key=totals.get)
-        confidence = totals[class_name] / max(1, len(probability_maps))
+        averaged = {
+            class_name: totals[class_name] / max(1, len(probability_maps))
+            for class_name in totals
+        }
+        top_class_name = max(averaged, key=averaged.get)
+        confidence = float(averaged[top_class_name])
+        class_name = top_class_name if confidence >= CONFIDENCE_THRESHOLD else INVALID_CATEGORY_NAME
         return {
             "class_name": class_name,
-            "confidence": float(confidence),
+            "top_class_name": top_class_name,
+            "confidence": confidence,
+            "probabilities": averaged,
         }
 
     def predict_window(self, images):
@@ -697,6 +867,7 @@ class VideoAnalysisWorker(QThread):
                 continue
 
             prediction = classifier.vote_probabilities(window_probabilities)
+            prediction["window_size"] = self.window_size
             self.frameDone.emit(frame_index, prediction)
             self.progress.emit(done, pending_total)
 
@@ -771,6 +942,7 @@ class VideoAnalysisWorker(QThread):
                 continue
 
             prediction = classifier.vote_probabilities(window_probabilities)
+            prediction["window_size"] = self.window_size
             self.frameDone.emit(frame_index, prediction)
             self.progress.emit(done, pending_total)
 
@@ -778,16 +950,23 @@ class VideoAnalysisWorker(QThread):
             self.finished.emit()
 
 
-class FullscreenVideoWindow(QWidget):
+class FullscreenVideoWindow(FramelessWindow):
     closed = pyqtSignal()
-    fallbackToggleRequested = pyqtSignal()
-    fallbackSeekRequested = pyqtSignal(int)
+    playPauseRequested = pyqtSignal()
+    seekRequested = pyqtSignal(int)
+    seekToRequested = pyqtSignal(int)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(None)
         self.setWindowTitle("大窗播放")
         self.setObjectName("fullscreenVideoWindow")
+        self.setWindowIcon(QIcon(":/gallery/images/logo.png"))
+        self.setTitleBar(FluentTitleBar(self))
+        self.titleBar.setTitle("大窗播放")
+        self.setMinimumSize(960, 640)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._fallbackPixmap = None
+        self._borderColor = "#3a3a3a"
         self.videoWidget = QVideoWidget(self)
         self.player = QMediaPlayer(self)
         self.player.setVideoOutput(self.videoWidget)
@@ -795,12 +974,6 @@ class FullscreenVideoWindow(QWidget):
         self.imageLabel.setAlignment(Qt.AlignCenter)
         self.imageLabel.setStyleSheet("QLabel { background: #111111; color: #dddddd; border: none; }")
         self.imageLabel.setVisible(False)
-        self.infoLabel = QLabel("", self)
-        self.infoLabel.setAlignment(Qt.AlignCenter)
-        self.infoLabel.setWordWrap(True)
-        self.infoLabel.setStyleSheet(
-            "QLabel { padding: 10px; background: #202020; color: white; font-size: 18px; border-radius: 4px; }"
-        )
         self.videoFrame = QFrame(self)
         self.videoFrame.setObjectName("fullscreenVideoFrame")
         self.videoFrameLayout = QVBoxLayout(self.videoFrame)
@@ -809,18 +982,60 @@ class FullscreenVideoWindow(QWidget):
         self.videoFrameLayout.addWidget(self.videoWidget, 1)
         self.videoFrameLayout.addWidget(self.imageLabel, 1)
 
+        self.infoLabel = QLabel("未加载视频", self)
+        self.infoLabel.setAlignment(Qt.AlignCenter)
+        self.infoLabel.setWordWrap(True)
+        self.infoLabel.setStyleSheet(
+            "QLabel { padding: 10px 12px; background: #202020; color: white; font-size: 16px; border-radius: 4px; }"
+        )
+
+        sliderLayout = QHBoxLayout()
+        sliderLayout.setSpacing(10)
+        self.positionLabel = BodyLabel("00:00", self)
+        sliderLayout.addWidget(self.positionLabel)
+        self.positionSlider = QSlider(Qt.Horizontal, self)
+        self.positionSlider.setMinimumWidth(360)
+        self.positionSlider.sliderReleased.connect(self._onSliderReleased)
+        sliderLayout.addWidget(self.positionSlider, 1)
+        self.durationLabel = BodyLabel("00:00", self)
+        sliderLayout.addWidget(self.durationLabel)
+
+        buttonLayout = QHBoxLayout()
+        buttonLayout.setSpacing(8)
+        self.backwardButton = PushButton("后退 3 秒", self, FIF.LEFT_ARROW)
+        self.backwardButton.clicked.connect(lambda: self.seekRequested.emit(-3))
+        buttonLayout.addWidget(self.backwardButton)
+
+        self.playPauseButton = PushButton("播放", self, FIF.PLAY)
+        self.playPauseButton.clicked.connect(self.playPauseRequested.emit)
+        buttonLayout.addWidget(self.playPauseButton)
+
+        self.forwardButton = PushButton("前进 3 秒", self, FIF.RIGHT_ARROW)
+        self.forwardButton.clicked.connect(lambda: self.seekRequested.emit(3))
+        buttonLayout.addWidget(self.forwardButton)
+
+        self.closeButton = PushButton("关闭", self, FIF.CLOSE)
+        self.closeButton.clicked.connect(self.close)
+        buttonLayout.addWidget(self.closeButton)
+        buttonLayout.addStretch()
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 56, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(self.videoFrame, 1)
         layout.addWidget(self.infoLabel)
+        layout.addLayout(sliderLayout)
+        layout.addLayout(buttonLayout)
+        self.installPlaybackShortcuts()
         self.setBorderColor(None)
+        self.setTimelineState(0, 0)
+        self.setPlaybackState(False)
 
     def setLabelText(self, text):
         self.infoLabel.setText(text)
 
     def setBorderColor(self, color):
-        border_color = color or "#3a3a3a"
+        self._borderColor = color or "#3a3a3a"
         self.setStyleSheet(
             f"""
             QWidget#fullscreenVideoWindow {{
@@ -828,11 +1043,38 @@ class FullscreenVideoWindow(QWidget):
             }}
             QFrame#fullscreenVideoFrame {{
                 background-color: #151515;
-                border: 4px solid {border_color};
+                border: 4px solid {self._borderColor};
                 border-radius: 6px;
             }}
             """
         )
+
+    def setTimelineState(self, position, duration):
+        duration = max(0, int(duration or 0))
+        position = max(0, int(position or 0))
+        self.positionSlider.blockSignals(True)
+        self.positionSlider.setRange(0, duration)
+        self.positionSlider.setValue(min(position, duration))
+        self.positionSlider.blockSignals(False)
+        self.positionLabel.setText(self.formatMs(position))
+        self.durationLabel.setText(self.formatMs(duration))
+
+    def setPlaybackState(self, playing):
+        self.playPauseButton.setText("暂停" if playing else "播放")
+
+    def installPlaybackShortcuts(self):
+        self.playbackShortcuts = []
+        shortcuts = [
+            (Qt.Key_Space, self.playPauseRequested.emit),
+            (Qt.Key_Left, lambda: self.seekRequested.emit(-3)),
+            (Qt.Key_Right, lambda: self.seekRequested.emit(3)),
+            (Qt.Key_Escape, self.close),
+        ]
+        for key, callback in shortcuts:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+            self.playbackShortcuts.append(shortcut)
 
     def setFallbackPixmap(self, pixmap):
         if pixmap and not pixmap.isNull():
@@ -843,26 +1085,55 @@ class FullscreenVideoWindow(QWidget):
                 pixmap.scaled(self.imageLabel.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
 
+    def setFallbackText(self, text):
+        self._fallbackPixmap = None
+        self.videoWidget.setVisible(False)
+        self.imageLabel.setVisible(True)
+        self.imageLabel.setPixmap(QPixmap())
+        self.imageLabel.setText(text)
+
     def loadMedia(self, video_path, position, playing):
+        self._fallbackPixmap = None
+        self.imageLabel.setText("")
         self.imageLabel.setVisible(False)
         self.videoWidget.setVisible(True)
         self.player.setMedia(QMediaContent(QUrl.fromLocalFile(str(video_path))))
         self.player.setPosition(max(0, int(position)))
+        self.setPlaybackState(bool(playing))
         if playing:
             self.player.play()
+        else:
+            self.player.pause()
+
+    def setPlaybackPosition(self, position):
+        self.positionSlider.blockSignals(True)
+        self.positionSlider.setValue(max(0, int(position or 0)))
+        self.positionSlider.blockSignals(False)
+        self.positionLabel.setText(self.formatMs(position))
+
+    def _onSliderReleased(self):
+        self.seekToRequested.emit(self.positionSlider.value())
+
+    def formatMs(self, ms):
+        seconds = max(0, int(ms / 1000))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Escape:
             self.close()
             return
         if event.key() == Qt.Key_Space:
-            self.fallbackToggleRequested.emit()
+            self.playPauseRequested.emit()
             return
         if event.key() == Qt.Key_Left:
-            self.fallbackSeekRequested.emit(-3)
+            self.seekRequested.emit(-3)
             return
         if event.key() == Qt.Key_Right:
-            self.fallbackSeekRequested.emit(3)
+            self.seekRequested.emit(3)
             return
         super().keyPressEvent(event)
 
@@ -880,15 +1151,15 @@ class FullscreenVideoWindow(QWidget):
 
 
 class ActionCategoryCard(CardWidget):
-    def __init__(self, category, count=0, parent=None):
+    def __init__(self, category, count=0, avg_confidence=None, parent=None):
         super().__init__(parent)
         self.category = category
         self.setMinimumHeight(64)
         self.setFixedWidth(220)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.initUI(count)
+        self.initUI(count, avg_confidence)
 
-    def initUI(self, count):
+    def initUI(self, count, avg_confidence):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
@@ -906,7 +1177,8 @@ class ActionCategoryCard(CardWidget):
         headerLayout.addWidget(self.nameLabel, 1)
         layout.addLayout(headerLayout)
 
-        self.countLabel = BodyLabel(f"已标记 {count} 帧", self)
+        confidence_text = format_confidence(avg_confidence) if avg_confidence is not None else "-"
+        self.countLabel = BodyLabel(f"已标注 {count} 帧 | 平均置信度 {confidence_text}", self)
         self.countLabel.setStyleSheet("QLabel { color: #aaaaaa; font-size: 12px; }")
         layout.addWidget(self.countLabel)
 
@@ -915,7 +1187,7 @@ class ActionCategoryCard(CardWidget):
         layout.addWidget(self.nameInfoLabel)
 
         self.installEventFilter(ToolTipFilter(self))
-        self.setToolTip(f"{self.category.display_name}: {count} 帧")
+        self.setToolTip(f"{self.category.display_name}: {count} 帧，平均置信度 {confidence_text}")
 
     def updateColorIndicator(self):
         color = self.category.color if self.category.color else "#3498db"
@@ -933,8 +1205,8 @@ class ActionCategoryCard(CardWidget):
 class ActionRecognitionInterface(GalleryInterface):
     def __init__(self, parent=None):
         super().__init__(
-            title="动作判断",
-            subtitle="从待分析视频目录选择视频，逐帧分析并用滑动窗口投票生成动作标记",
+            title="动作识别",
+            subtitle="按滑动窗口分析视频帧并生成动作标签",
             parent=parent,
         )
         self.setObjectName("actionRecognitionInterface")
@@ -948,6 +1220,10 @@ class ActionRecognitionInterface(GalleryInterface):
         self.previewAvailable = False
         self.useFallbackPreview = False
         self.fallbackPositionMs = 0
+        self.fallbackCapture = None
+        self.fallbackCapturePath = None
+        self.fallbackPixmap = None
+        self.requestedPlayback = False
 
         self.player = QMediaPlayer(self)
         self.videoWidget = QVideoWidget(self)
@@ -965,10 +1241,10 @@ class ActionRecognitionInterface(GalleryInterface):
         signalBus.workDirectoryChanged.connect(lambda _: self.refreshVideoList())
 
     def initUI(self):
-        self.videoDirCard = self.addExampleCard("工作目录视频", self.createVideoDirectoryWidget(), "", stretch=1)
+        self.videoDirCard = self.addExampleCard("工作视频", self.createVideoDirectoryWidget(), "", stretch=1)
         self.modelCard = self.addExampleCard("模型管理", self.createModelWidget(), "", stretch=1)
         self.analysisCard = self.addExampleCard("动作分析", self.createAnalysisWidget(), "", stretch=1)
-        self.playerCard = self.addExampleCard("视频播放", self.createPlayerWidget(), "", stretch=1)
+        self.playerCard = self.addExampleCard("视频播放器", self.createPlayerWidget(), "", stretch=1)
 
     def updateContentVisibility(self):
         has_video = self.project is not None
@@ -1003,7 +1279,7 @@ class ActionRecognitionInterface(GalleryInterface):
         selectLayout.addWidget(self.loadVideoButton)
         layout.addLayout(selectLayout)
 
-        self.videoDirLabel = BodyLabel("工作目录未设置", self)
+        self.videoDirLabel = BodyLabel("未设置工作目录", self)
         self.videoDirLabel.setWordWrap(True)
         self.videoDirLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.videoDirLabel.setStyleSheet("QLabel { padding: 6px 8px; }")
@@ -1050,7 +1326,7 @@ class ActionRecognitionInterface(GalleryInterface):
         layout.setSpacing(12)
 
         controlLayout = QHBoxLayout()
-        controlLayout.addWidget(BodyLabel("滑动窗口:", self))
+        controlLayout.addWidget(BodyLabel("窗口:", self))
         self.windowSizeSpinBox = SpinBox(self)
         self.windowSizeSpinBox.setRange(1, 31)
         self.windowSizeSpinBox.setValue(5)
@@ -1072,7 +1348,7 @@ class ActionRecognitionInterface(GalleryInterface):
         self.stopAnalysisButton.clicked.connect(self.stopAnalysis)
         controlLayout.addWidget(self.stopAnalysisButton)
 
-        self.openActionJsonButton = PushButton("打开动作JSON", self, FIF.DOCUMENT)
+        self.openActionJsonButton = PushButton("打开动作 JSON", self, FIF.DOCUMENT)
         self.openActionJsonButton.clicked.connect(self.openActionJson)
         controlLayout.addWidget(self.openActionJsonButton)
         controlLayout.addStretch()
@@ -1106,6 +1382,7 @@ class ActionRecognitionInterface(GalleryInterface):
         layout.addWidget(self.videoWidget, 1)
 
         self.fallbackFrameLabel = QLabel(self)
+        self.fallbackFrameLabel.setText("视频预览不可用\n仍可播放时间轴并显示最近分析结果")
         self.fallbackFrameLabel.setMinimumHeight(360)
         self.fallbackFrameLabel.setAlignment(Qt.AlignCenter)
         self.fallbackFrameLabel.setStyleSheet("QLabel { background: #111111; color: #dddddd; }")
@@ -1133,7 +1410,7 @@ class ActionRecognitionInterface(GalleryInterface):
         layout.addLayout(sliderLayout)
 
         buttonLayout = QHBoxLayout()
-        self.backwardButton = PushButton("后退 3s", self)
+        self.backwardButton = PushButton("后退 3 秒", self)
         self.backwardButton.clicked.connect(lambda: self.seekBySeconds(-3))
         buttonLayout.addWidget(self.backwardButton)
 
@@ -1141,7 +1418,7 @@ class ActionRecognitionInterface(GalleryInterface):
         self.playPauseButton.clicked.connect(self.togglePlayPause)
         buttonLayout.addWidget(self.playPauseButton)
 
-        self.forwardButton = PushButton("前进 3s", self)
+        self.forwardButton = PushButton("前进 3 秒", self)
         self.forwardButton.clicked.connect(lambda: self.seekBySeconds(3))
         buttonLayout.addWidget(self.forwardButton)
 
@@ -1211,13 +1488,13 @@ class ActionRecognitionInterface(GalleryInterface):
             self.videoComboBox.addItem(display)
             self.video_paths[display] = str(path)
         if not videos:
-            self.videoComboBox.addItem("工作目录及一级子文件夹下未找到视频")
+            self.videoComboBox.addItem("工作目录或一级子目录中未找到视频")
         self.loadVideoButton.setEnabled(bool(videos))
 
     def openVideoDirectory(self):
         work_dir = cfg.get(cfg.workDirectory)
         if not work_dir:
-            InfoBar.warning("警告", "请先在设置中配置工作目录", duration=2000, parent=self)
+            InfoBar.warning("警告", "请先设置工作目录", duration=2000, parent=self)
             return
         Path(work_dir).mkdir(parents=True, exist_ok=True)
         self.openPath(work_dir)
@@ -1251,47 +1528,171 @@ class ActionRecognitionInterface(GalleryInterface):
         self.useFallbackPreview = False
         self.fallbackTimer.stop()
         self.fallbackPositionMs = 0
+        self.fallbackPixmap = None
+        self.requestedPlayback = False
+        self.releaseFallbackCapture()
         self.videoWidget.setVisible(True)
         self.fallbackFrameLabel.setVisible(False)
+        self.fallbackFrameLabel.clear()
+        self.fallbackFrameLabel.setText("视频预览不可用\n仍可播放时间轴并显示最近分析结果")
         self.player.stop()
         try:
             self.player.setVideoOutput(self.videoWidget)
             self.player.setMedia(QMediaContent(QUrl.fromLocalFile(str(self.project.video_path))))
             self.previewAvailable = True
+            self.positionSlider.setRange(0, self.project.duration_ms)
+            self.positionSlider.setValue(0)
+            self.positionLabel.setText(self.formatMs(0))
+            self.durationLabel.setText(self.formatMs(self.project.duration_ms))
         except Exception as e:
-            self.previewAvailable = False
-            self.playbackLabel.setText(
-                f"视频已加载，但系统播放器无法预览: {str(e)}。仍可开始逐帧分析。"
-            )
+            self.activateFallbackPreview(f"系统预览不可用: {str(e)}")
 
     def onPlayerError(self, *_):
         if not self.project:
             return
 
-        self.previewAvailable = True
-        self.useFallbackPreview = True
-        self.player.stop()
-        self.videoWidget.setVisible(False)
-        self.fallbackFrameLabel.setVisible(True)
-        self.positionSlider.setRange(0, self.project.duration_ms)
         message = self.player.errorString() or "当前系统播放器无法解码或渲染该视频"
-        self.playbackLabel.setText(
-            f"系统播放器无法预览: {message}。已切换到 FFmpeg 抽帧预览，仍可逐帧分析。"
-        )
-        if self.fullscreenWindow:
-            self.fullscreenWindow.setLabelText(self.playbackLabel.text())
-        self.renderFallbackPreviewFrame()
+        self.activateFallbackPreview(message, start_playback=self.requestedPlayback)
         InfoBar.warning(
-            "播放预览不可用",
-            "DirectShow 无法解码/渲染该视频，已切换到 FFmpeg 抽帧预览。",
+            "预览已切换",
+            "DirectShow 无法解码或渲染该视频，已切换为逐帧预览。",
             duration=5000,
             parent=self,
         )
 
-    def renderFallbackPreviewFrame(self):
+    def activateFallbackPreview(self, message, start_playback=False):
+        self.previewAvailable = True
+        self.useFallbackPreview = True
+        self.player.stop()
+        if start_playback:
+            self.fallbackTimer.start()
+            self.playPauseButton.setText("暂停")
+        else:
+            self.fallbackTimer.stop()
+            self.playPauseButton.setText("播放")
+        self.videoWidget.setVisible(False)
+        self.fallbackFrameLabel.setVisible(True)
+        self.fallbackFrameLabel.setPixmap(QPixmap())
+        self.fallbackFrameLabel.setText("正在使用逐帧预览")
+        self.positionSlider.setRange(0, self.project.duration_ms)
+        self.positionSlider.setValue(self.fallbackPositionMs)
+        self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
+        self.durationLabel.setText(self.formatMs(self.project.duration_ms))
+        frame_ok = self.renderFallbackFrame(self.fallbackPositionMs)
+        if frame_ok:
+            self.playbackLabel.setText(
+                f"系统预览不可用: {message}。已切换为逐帧预览。"
+            )
+        else:
+            self.playbackLabel.setText(
+                f"系统预览不可用: {message}。暂时无法读取预览画面，但仍可继续分析。"
+            )
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setLabelText(self.playbackLabel.text())
+            if self.fallbackPixmap:
+                self.fullscreenWindow.setFallbackPixmap(self.fallbackPixmap)
+            else:
+                self.fullscreenWindow.setFallbackText("暂时无法读取该视频画面")
+            self.fullscreenWindow.setPlaybackState(self.fallbackTimer.isActive())
+            self.fullscreenWindow.setTimelineState(self.fallbackPositionMs, self.project.duration_ms)
+
+    def onFallbackPreviewTick(self):
         if not self.project:
             return
-        seconds = max(0.0, self.fallbackPositionMs / 1000.0)
+        self.fallbackPositionMs += self.fallbackTimer.interval()
+        duration = self.project.duration_ms
+        if duration > 0 and self.fallbackPositionMs >= duration:
+            self.fallbackPositionMs = duration
+            self.fallbackTimer.stop()
+            self.requestedPlayback = False
+            self.playPauseButton.setText("播放")
+        self.positionSlider.setValue(self.fallbackPositionMs)
+        self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
+        self.renderFallbackFrame(self.fallbackPositionMs)
+        self.updatePlaybackLabel()
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackPosition(self.fallbackPositionMs)
+            self.fullscreenWindow.setTimelineState(self.fallbackPositionMs, duration)
+            self.fullscreenWindow.setPlaybackState(self.fallbackTimer.isActive())
+
+    def releaseFallbackCapture(self):
+        if self.fallbackCapture:
+            self.fallbackCapture.release()
+        self.fallbackCapture = None
+        self.fallbackCapturePath = None
+
+    def ensureFallbackCapture(self):
+        if not self.project:
+            return None
+        video_path = str(self.project.video_path)
+        if self.fallbackCapture and self.fallbackCapturePath == video_path and self.fallbackCapture.isOpened():
+            return self.fallbackCapture
+
+        self.releaseFallbackCapture()
+        try:
+            import cv2
+        except Exception:
+            return None
+
+        capture = cv2.VideoCapture(video_path)
+        if not capture.isOpened():
+            capture.release()
+            return None
+
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        if total_frames > 0 and (self.project.total_frames <= 0 or self.project.fps <= 0):
+            self.project.update_video_info(total_frames, fps)
+            self.positionSlider.setRange(0, self.project.duration_ms)
+            self.durationLabel.setText(self.formatMs(self.project.duration_ms))
+
+        self.fallbackCapture = capture
+        self.fallbackCapturePath = video_path
+        return capture
+
+    def renderFallbackFrame(self, position_ms=None):
+        if not self.project:
+            return False
+
+        capture = self.ensureFallbackCapture()
+        if not capture:
+            return self.renderFallbackFrameWithFfmpeg(position_ms)
+
+        try:
+            import cv2
+        except Exception:
+            return self.renderFallbackFrameWithFfmpeg(position_ms)
+
+        position_ms = self.fallbackPositionMs if position_ms is None else max(0, int(position_ms))
+        total_frames = max(0, int(self.project.total_frames or capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+        duration_ms = max(0, int(self.project.duration_ms or 0))
+        fps = float(self.project.fps or capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        if total_frames > 0 and duration_ms > 0:
+            ratio = min(1.0, max(0.0, position_ms / duration_ms))
+            frame_index = min(total_frames - 1, int(round(ratio * (total_frames - 1))))
+        elif fps > 0:
+            frame_index = max(0, int(round(position_ms * fps / 1000)))
+        else:
+            frame_index = 0
+
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            return self.renderFallbackFrameWithFfmpeg(position_ms)
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb_frame.shape
+        bytes_per_line = channels * width
+        image = QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(image)
+        self.setFallbackFramePixmap(pixmap)
+        return True
+
+    def renderFallbackFrameWithFfmpeg(self, position_ms=None):
+        if not self.project:
+            return False
+
+        seconds = max(0.0, (self.fallbackPositionMs if position_ms is None else int(position_ms)) / 1000.0)
         cmd = [
             get_ffmpeg_path(),
             "-hide_banner",
@@ -1309,39 +1710,42 @@ class ActionRecognitionInterface(GalleryInterface):
             "png",
             "pipe:1",
         ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        if result.returncode != 0 or not result.stdout:
-            self.fallbackFrameLabel.setText("FFmpeg 无法抽取预览帧")
-            return
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
+            )
+        except Exception:
+            result = None
+
+        if not result or result.returncode != 0 or not result.stdout:
+            self.fallbackPixmap = None
+            self.fallbackFrameLabel.setPixmap(QPixmap())
+            self.fallbackFrameLabel.setText("无法读取当前位置的视频帧")
+            return False
 
         pixmap = QPixmap()
-        if pixmap.loadFromData(result.stdout):
-            scaled = pixmap.scaled(
-                self.fallbackFrameLabel.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            self.fallbackFrameLabel.setPixmap(scaled)
-            if self.fullscreenWindow:
-                self.fullscreenWindow.setFallbackPixmap(pixmap)
+        if not pixmap.loadFromData(result.stdout):
+            self.fallbackPixmap = None
+            self.fallbackFrameLabel.setPixmap(QPixmap())
+            self.fallbackFrameLabel.setText("无法显示当前位置的视频帧")
+            return False
 
-    def onFallbackPreviewTick(self):
-        if not self.project:
+        self.setFallbackFramePixmap(pixmap)
+        return True
+
+    def setFallbackFramePixmap(self, pixmap):
+        if not pixmap or pixmap.isNull():
             return
-        self.fallbackPositionMs += self.fallbackTimer.interval()
-        duration = self.project.duration_ms
-        if duration > 0 and self.fallbackPositionMs >= duration:
-            self.fallbackPositionMs = duration
-            self.fallbackTimer.stop()
-            self.playPauseButton.setText("播放")
-        self.positionSlider.setValue(self.fallbackPositionMs)
-        self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
-        self.renderFallbackPreviewFrame()
-        self.updatePlaybackLabel()
+        self.fallbackPixmap = pixmap
+        self.fallbackFrameLabel.setText("")
+        self.fallbackFrameLabel.setPixmap(
+            pixmap.scaled(self.fallbackFrameLabel.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
+        if self.fullscreenWindow and self.useFallbackPreview:
+            self.fullscreenWindow.setFallbackPixmap(pixmap)
 
     def updateVideoInfoFromFile(self):
         if not self.project:
@@ -1459,7 +1863,7 @@ class ActionRecognitionInterface(GalleryInterface):
         self.project.window_size = window_size
         self.project.sample_rate = sample_rate
         self.project.prune_predictions_to_samples(model["id"], sample_indices)
-        pending = self.project.pending_frame_indices(model["id"], sample_indices)
+        pending = self.project.pending_frame_indices(model["id"], sample_indices, window_size)
         if not pending:
             self.applyVoteAndRefresh(model["id"], window_size, sample_indices)
             InfoBar.success("完成", "采样帧已有该模型预测，已重新执行滑动窗口投票", duration=3000, parent=self)
@@ -1532,7 +1936,12 @@ class ActionRecognitionInterface(GalleryInterface):
         self.refreshSummaryTable()
         self.updatePlaybackLabel()
         sample_count = len(sample_indices) if sample_indices is not None else len(self.project.labeled_frames)
-        self.analysisStatusLabel.setText(f"分析完成: 已用目标帧前后 {window_size} 帧概率累加投票，更新 {changed} 个采样标记，共 {sample_count} 个采样点")
+        invalid_count = self.project.get_label_counts().get(INVALID_CATEGORY_NAME, 0)
+        self.analysisStatusLabel.setText(
+            f"分析完成: 已对 {window_size} 帧窗口内的类别概率取平均，"
+            f"低于 {format_confidence(CONFIDENCE_THRESHOLD)} 标为无效类，"
+            f"更新 {changed} 个采样标记，共 {sample_count} 个采样点，无效 {invalid_count} 个"
+        )
 
     def refreshSummaryTable(self):
         if not self.project:
@@ -1540,13 +1949,16 @@ class ActionRecognitionInterface(GalleryInterface):
             return
 
         self.clearCategoryCards()
-        counts = self.project.get_label_counts()
-        categories = [
-            category for category in self.project.label_project.categories
-            if category.name != INVALID_CATEGORY_NAME and category.name != INVALID_CATEGORY_DISPLAY_NAME
-        ]
+        stats = self.project.get_label_stats()
+        categories = list(self.project.label_project.categories)
         for category in categories:
-            card = ActionCategoryCard(category, counts.get(category.name, 0), self.categoryContainer)
+            item = stats.get(category.name, {})
+            count = item.get("count", 0)
+            confidence_count = item.get("confidence_count", 0)
+            avg_confidence = None
+            if confidence_count:
+                avg_confidence = item.get("confidence_total", 0.0) / confidence_count
+            card = ActionCategoryCard(category, count, avg_confidence, self.categoryContainer)
             self.categoryFlowLayout.addWidget(card)
 
         self.categoryContainer.updateGeometry()
@@ -1592,15 +2004,23 @@ class ActionRecognitionInterface(GalleryInterface):
         if self.useFallbackPreview:
             if self.fallbackTimer.isActive():
                 self.fallbackTimer.stop()
+                self.requestedPlayback = False
                 self.playPauseButton.setText("播放")
             else:
                 self.fallbackTimer.start()
+                self.requestedPlayback = True
                 self.playPauseButton.setText("暂停")
+            if self.fullscreenWindow:
+                self.fullscreenWindow.setPlaybackState(self.fallbackTimer.isActive())
             return
         if self.player.state() == QMediaPlayer.PlayingState:
+            self.requestedPlayback = False
             self.player.pause()
         else:
+            self.requestedPlayback = True
             self.player.play()
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackState(self.player.state() == QMediaPlayer.PlayingState)
 
     def seekBySeconds(self, seconds):
         if not self.previewAvailable:
@@ -1610,11 +2030,16 @@ class ActionRecognitionInterface(GalleryInterface):
             self.fallbackPositionMs = max(0, min(duration, self.fallbackPositionMs + seconds * 1000))
             self.positionSlider.setValue(self.fallbackPositionMs)
             self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
-            self.renderFallbackPreviewFrame()
+            self.renderFallbackFrame(self.fallbackPositionMs)
             self.updatePlaybackLabel()
+            if self.fullscreenWindow:
+                self.fullscreenWindow.setPlaybackPosition(self.fallbackPositionMs)
+                self.fullscreenWindow.setTimelineState(self.fallbackPositionMs, duration)
             return
         target = max(0, min(self.player.duration(), self.player.position() + seconds * 1000))
         self.player.setPosition(target)
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackPosition(target)
 
     def onSliderPressed(self):
         self.is_slider_pressed = True
@@ -1624,10 +2049,15 @@ class ActionRecognitionInterface(GalleryInterface):
         if self.useFallbackPreview:
             self.fallbackPositionMs = self.positionSlider.value()
             self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
-            self.renderFallbackPreviewFrame()
+            self.renderFallbackFrame(self.fallbackPositionMs)
             self.updatePlaybackLabel()
+            if self.fullscreenWindow:
+                self.fullscreenWindow.setPlaybackPosition(self.fallbackPositionMs)
+                self.fullscreenWindow.setTimelineState(self.fallbackPositionMs, self.project.duration_ms if self.project else 0)
             return
         self.player.setPosition(self.positionSlider.value())
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackPosition(self.positionSlider.value())
 
     def onPositionChanged(self, position):
         if self.useFallbackPreview:
@@ -1636,17 +2066,24 @@ class ActionRecognitionInterface(GalleryInterface):
             self.positionSlider.setValue(position)
         self.positionLabel.setText(self.formatMs(position))
         self.updatePlaybackLabel()
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackPosition(position)
+            self.fullscreenWindow.setTimelineState(position, self.player.duration())
 
     def onDurationChanged(self, duration):
         if self.useFallbackPreview:
             return
         self.positionSlider.setRange(0, duration)
         self.durationLabel.setText(self.formatMs(duration))
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setTimelineState(self.player.position(), duration)
 
     def onPlayerStateChanged(self, state):
         if self.useFallbackPreview:
             return
         self.playPauseButton.setText("暂停" if state == QMediaPlayer.PlayingState else "播放")
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackState(state == QMediaPlayer.PlayingState)
 
     def formatMs(self, ms):
         seconds = max(0, int(ms / 1000))
@@ -1683,14 +2120,22 @@ class ActionRecognitionInterface(GalleryInterface):
         if index < 0:
             self.playbackLabel.setText(f"已加载视频: {self.project.video_path.name}")
             if self.fullscreenWindow:
+                self.fullscreenWindow.setLabelText(self.playbackLabel.text())
                 self.fullscreenWindow.setBorderColor(None)
             return
 
-        label_name = self.project.get_nearest_frame_label(index)
+        prediction = self.project.get_nearest_frame_prediction(index)
+        label_name = prediction.get("class_name", "") if prediction else ""
         category = self.project.label_project.get_category(label_name) if label_name else None
         label_text = self.project.label_project.get_category_display_name(label_name) if label_name else "未标记"
         border_color = category.color if category else None
-        text = f"帧 {index + 1} / {self.project.total_frames} | 最近采样动作: {label_text}"
+        confidence_text = format_confidence(prediction.get("confidence", 0) if prediction else 0)
+        top_class_name = prediction.get("top_class_name", "") if prediction else ""
+        if label_name == INVALID_CATEGORY_NAME and top_class_name:
+            top_text = self.project.label_project.get_category_display_name(top_class_name)
+            text = f"帧 {index + 1} / {self.project.total_frames} | 最近采样动作: {label_text} | 最高候选: {top_text} | 置信度: {confidence_text}"
+        else:
+            text = f"帧 {index + 1} / {self.project.total_frames} | 最近采样动作: {label_text} | 置信度: {confidence_text}"
         self.playbackLabel.setText(text)
         if self.fullscreenWindow:
             self.fullscreenWindow.setLabelText(text)
@@ -1714,25 +2159,65 @@ class ActionRecognitionInterface(GalleryInterface):
 
         self.fullscreenWindow = FullscreenVideoWindow(self)
         self.fullscreenWindow.closed.connect(self.restoreInlineVideoOutput)
-        self.fullscreenWindow.fallbackToggleRequested.connect(self.togglePlayPause)
-        self.fullscreenWindow.fallbackSeekRequested.connect(self.seekBySeconds)
+        self.fullscreenWindow.playPauseRequested.connect(self.togglePlayPause)
+        self.fullscreenWindow.seekRequested.connect(self.seekBySeconds)
+        self.fullscreenWindow.seekToRequested.connect(self.seekToPosition)
         if self.useFallbackPreview:
             self.fullscreenWindow.videoWidget.setVisible(False)
             self.fullscreenWindow.imageLabel.setVisible(True)
-            current_pixmap = self.fallbackFrameLabel.pixmap()
-            if current_pixmap:
-                self.fullscreenWindow.setFallbackPixmap(current_pixmap)
+            if self.fallbackPixmap:
+                self.fullscreenWindow.setFallbackPixmap(self.fallbackPixmap)
+            else:
+                self.fullscreenWindow.setFallbackText("暂时无法读取该视频画面")
         else:
             self.fullscreenWindow.imageLabel.setVisible(False)
             self.fullscreenWindow.videoWidget.setVisible(True)
             self.player.setVideoOutput(self.fullscreenWindow.videoWidget)
         self.updatePlaybackLabel()
+        self.syncFullscreenWindowState()
         self.fullscreenWindow.showMaximized()
 
     def restoreInlineVideoOutput(self):
         if not self.useFallbackPreview:
             self.player.setVideoOutput(self.videoWidget)
         self.fullscreenWindow = None
+
+    def syncFullscreenWindowState(self):
+        if not self.fullscreenWindow:
+            return
+        if self.useFallbackPreview:
+            duration = self.project.duration_ms if self.project else 0
+            position = self.fallbackPositionMs
+            self.fullscreenWindow.setPlaybackState(self.fallbackTimer.isActive())
+        else:
+            duration = self.player.duration()
+            position = self.player.position()
+            self.fullscreenWindow.setPlaybackState(self.player.state() == QMediaPlayer.PlayingState)
+        self.fullscreenWindow.setTimelineState(position, duration)
+        self.fullscreenWindow.setLabelText(self.playbackLabel.text())
+        if self.useFallbackPreview:
+            if self.fallbackPixmap:
+                self.fullscreenWindow.setFallbackPixmap(self.fallbackPixmap)
+            else:
+                self.fullscreenWindow.setFallbackText("暂时无法读取该视频画面")
+
+    def seekToPosition(self, position):
+        if not self.previewAvailable:
+            return
+        if self.useFallbackPreview:
+            duration = self.project.duration_ms if self.project else 0
+            self.fallbackPositionMs = max(0, min(duration, int(position)))
+            self.positionSlider.setValue(self.fallbackPositionMs)
+            self.positionLabel.setText(self.formatMs(self.fallbackPositionMs))
+            self.renderFallbackFrame(self.fallbackPositionMs)
+            self.updatePlaybackLabel()
+            if self.fullscreenWindow:
+                self.fullscreenWindow.setPlaybackPosition(self.fallbackPositionMs)
+                self.fullscreenWindow.setTimelineState(self.fallbackPositionMs, duration)
+            return
+        self.player.setPosition(max(0, int(position)))
+        if self.fullscreenWindow:
+            self.fullscreenWindow.setPlaybackPosition(max(0, int(position)))
 
     def openActionJson(self):
         if not self.project:
@@ -1759,10 +2244,23 @@ class ActionRecognitionInterface(GalleryInterface):
             self.project.save()
             self.project.label_project.save_config()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.useFallbackPreview and self.fallbackPixmap and not self.fallbackPixmap.isNull():
+            self.fallbackFrameLabel.setPixmap(
+                self.fallbackPixmap.scaled(
+                    self.fallbackFrameLabel.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
     def closeEvent(self, event):
         self.flushProjectSave()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()
+        self.fallbackTimer.stop()
+        self.releaseFallbackCapture()
         self.player.stop()
         super().closeEvent(event)
